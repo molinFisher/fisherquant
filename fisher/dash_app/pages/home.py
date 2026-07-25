@@ -8,10 +8,50 @@ def create_home_layout():
             html.H3("首页仪表盘", className="mb-4"),
             dbc.Row(
                 [
-                    dbc.Col(create_stat_card("缓存标的", "0", "全部标的", "primary"), width=3),
-                    dbc.Col(create_stat_card("A股", "0", "沪深股票", "success"), width=3),
-                    dbc.Col(create_stat_card("港股", "0", "港股通", "info"), width=3),
-                    dbc.Col(create_stat_card("数据条数", "0", "最近更新: -", "warning"), width=3),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody([
+                                html.H6("缓存标的", className="text-muted"),
+                                html.H3("0", id="stat-tickers-count", className="text-primary"),
+                                html.Small("全部标的", className="text-muted"),
+                            ]),
+                            className="stat-card",
+                        ),
+                        width=3,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody([
+                                html.H6("A股", className="text-muted"),
+                                html.H3("0", id="stat-ashare-count", className="text-success"),
+                                html.Small("沪深股票", className="text-muted"),
+                            ]),
+                            className="stat-card",
+                        ),
+                        width=3,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody([
+                                html.H6("港股", className="text-muted"),
+                                html.H3("0", id="stat-hk-count", className="text-info"),
+                                html.Small("港股通", className="text-muted"),
+                            ]),
+                            className="stat-card",
+                        ),
+                        width=3,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody([
+                                html.H6("数据条数", className="text-muted"),
+                                html.H3("0", id="stat-records-count", className="text-warning"),
+                                html.Small("最近更新: -", id="stat-last-update", className="text-muted"),
+                            ]),
+                            className="stat-card",
+                        ),
+                        width=3,
+                    ),
                 ],
                 className="mb-4",
             ),
@@ -43,19 +83,5 @@ def create_home_layout():
                     ),
                 ]
             ),
-        ]
-    )
-
-
-def create_stat_card(title, value, subtitle, color):
-    return dbc.Card(
-        [
-            dbc.CardBody(
-                [
-                    html.H6(title, className="text-muted"),
-                    html.H3(value, className=f"text-{color}"),
-                    html.Small(subtitle, className="text-muted"),
-                ]
-            )
         ]
     )

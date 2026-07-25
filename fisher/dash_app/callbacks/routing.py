@@ -1,4 +1,4 @@
-from dash import Input, Output, State, html, callback
+from dash import Input, Output, callback, html, no_update
 import dash_bootstrap_components as dbc
 from fisher.dash_app.pages.home import create_home_layout
 from fisher.dash_app.pages.data_center import create_data_center_layout
@@ -29,19 +29,8 @@ def register_routing_callback(app):
         return builder()
 
 
-def register_toast_callback(app):
-    @app.callback(
-        Output("toast-container", "children"),
-        Input("toast-trigger", "data"),
-        State("toast-container", "children"),
-        prevent_initial_call=True,
-    )
-    def show_toast(trigger_data, existing):
-        if not trigger_data:
-            return existing or []
-        return []
-
-
 def register_all_callbacks(app):
     register_routing_callback(app)
-    register_toast_callback(app)
+
+    from fisher.dash_app.callbacks.home_callbacks import register_home_callbacks
+    register_home_callbacks(app)
