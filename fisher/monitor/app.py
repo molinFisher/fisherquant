@@ -1,0 +1,103 @@
+from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
+from pathlib import Path
+import os
+
+from .auth import create_access_token, authenticate, get_current_user, CREDENTIALS_DIR, CREDENTIALS_FILE
+from .auth import create_default_admin
+from .ws import ws_router
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+templates_dir = Path(__file__).parent / "templates"
+if not templates_dir.exists():
+    templates_dir = Path(__file__).parent.parent.parent / "fisher" / "monitor" / "templates"
+
+templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.exists() else None
+
+
+def _get_template_response(request: Request, name: str, **ctx) -> HTMLResponse:
+    if templates:
+        return templates.TemplateResponse(name, {"request": request, **ctx})
+    return HTMLResponse(f"<html><body><h1>{name}</h1></body></html>")
+
+
+async def _verify_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> str | None:
+    if credentials:
+        try:
+            return get_current_user(credentials.credentials)
+        except Exception:
+            pass
+    token = request.cookies.get("access_token") or request.query_params.get("token")
+    if token:
+        try:
+            return get_current_user(token)
+        except Exception:
+            pass
+    return None
+
+
+async def _require_auth(user: str | None = Depends(_verify_token)) -> str:
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def create_app() -> FastAPI:
+    create_default_admin()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        os.makedirs(CREDENTIALS_DIR, exist_ok=True)
+        yield
+
+    app = FastAPI(title="FisherQuant Monitor", lifespan=lifespan)
+
+    from fastapi import Form
+    from fastapi.responses import RedirectResponse
+
+    @app.get("/login")
+    async def login_page(request: Request):
+        return _get_template_response(request, "login.html")
+
+    @app.post("/login")
+    async def login_post(username: str = Form(...), password: str = Form(...)):
+        if authenticate(username, password):
+            token = create_access_token(username)
+            return {"access_token": token, "token_type": "bearer"}
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    @app.get("/dashboard")
+    async def dashboard(request: Request, user: str = Depends(_require_auth)):
+        return _get_template_response(request, "dashboard.html")
+
+    @app.get("/")
+    async def root():
+        return {"app": "FisherQuant", "version": "0.1.0"}
+
+    @app.get("/api/overview")
+    async def api_overview(user: str = Depends(_require_auth)):
+        return {"nav": 1000000.0, "capital": 1000000.0, "available": 1000000.0, "user": user}
+
+    @app.get("/api/positions")
+    async def api_positions(user: str = Depends(_require_auth)):
+        return {"positions": []}
+
+    @app.get("/api/orders")
+    async def api_orders(user: str = Depends(_require_auth)):
+        return []
+
+    @app.get("/api/risk")
+    async def api_risk(user: str = Depends(_require_auth)):
+        return {"status": "ok", "rules": []}
+
+    app.include_router(ws_router)
+
+    return app
