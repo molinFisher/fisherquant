@@ -2,6 +2,6 @@
 channels:
   console:
     type: console
-    events: [RiskAlert, OrderFilled, OrderRejected, SystemError]
+    events: [risk_alert, order_filled, order_rejected, system_error]
     level: WARN
     throttle: 60

@@ -37,7 +37,17 @@ class AsyncioEventBus(EventBus):
     def publish(self, event: Event) -> None:
         event_type = event.__event_type__
         for handler in self._handlers.get(event_type, []):
-            asyncio.ensure_future(self._safe_call(handler, event))
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is None:
+                logger.warning(
+                    "No running event loop, cannot schedule handler for %s",
+                    event_type,
+                )
+                continue
+            asyncio.create_task(self._safe_call(handler, event))
 
     async def _safe_call(self, handler: Handler, event: Event) -> None:
         try:

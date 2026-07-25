@@ -56,8 +56,9 @@ def init_logging(cfg: LoggingConfig) -> None:
     else:
         when = rotation[0]
     json_log = log_dir / "fisher.log"
+    backup_count = int(cfg.retention.rstrip("d"))
     json_handler = TimedRotatingFileHandler(
-        str(json_log), when=when, backupCount=30
+        str(json_log), when=when, backupCount=backup_count
     )
     json_handler.setFormatter(_StructuredFormatter())
     root.addHandler(json_handler)

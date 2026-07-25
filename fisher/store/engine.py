@@ -13,16 +13,22 @@ class DuckDBEngine:
     def connection(self) -> duckdb.DuckDBPyConnection:
         return self._conn
 
-    def execute(self, sql: str, params: list = []) -> duckdb.DuckDBPyRelation:
-        return self._conn.execute(sql, params)
+    def execute(self, sql: str, params: list | None = None) -> duckdb.DuckDBPyRelation:
+        if params is None:
+            params = []
+        with self._lock:
+            return self._conn.execute(sql, params)
 
     def execute_many(self, sql: str, params_list: list[list]) -> None:
         with self._lock:
             self._conn.executemany(sql, params_list)
 
-    def query_df(self, sql: str, params: list = []) -> pl.DataFrame:
-        rel = self._conn.sql(sql, params=params)
-        return rel.pl()
+    def query_df(self, sql: str, params: list | None = None) -> pl.DataFrame:
+        if params is None:
+            params = []
+        with self._lock:
+            rel = self._conn.sql(sql, params=params)
+            return rel.pl()
 
     def close(self) -> None:
         self._conn.close()

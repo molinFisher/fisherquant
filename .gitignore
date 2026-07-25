@@ -3,3 +3,8 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+*.db
+*.log
+dist/
+htmlcov/
+.coverage
