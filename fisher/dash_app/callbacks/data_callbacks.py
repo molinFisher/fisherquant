@@ -151,6 +151,165 @@ def register_data_callbacks(app):
             return None
         return no_update
 
+    @app.callback(
+        Output("cached-table-container", "children"),
+        Input("data-center-tabs", "active_tab"),
+        Input("cache-market-filter", "value"),
+        Input("cache-filter-input", "value"),
+        Input("cache-refresh-btn", "n_clicks"),
+        Input("cache-delete-btn", "n_clicks"),
+    )
+    def render_cached_table(active_tab, market_filter, filter_text, refresh_clicks, delete_clicks):
+        if active_tab != "tab-cached":
+            return no_update
+
+        db = _get_db()
+        where_clauses = []
+        params = []
+
+        if market_filter and market_filter != "all":
+            where_clauses.append("market = ?")
+            params.append(market_filter)
+
+        if filter_text and filter_text.strip():
+            where_clauses.append("(ticker LIKE ? OR ticker LIKE ?)")
+            f = f"%{filter_text.strip()}%"
+            params.extend([f, f])
+
+        where_sql = ""
+        if where_clauses:
+            where_sql = "WHERE " + " AND ".join(where_clauses)
+
+        sql = f"""
+            SELECT ticker, market,
+                   COUNT(*) AS records,
+                   MIN(trade_date) AS start_date,
+                   MAX(trade_date) AS end_date
+            FROM bars_daily
+            {where_sql}
+            GROUP BY ticker, market
+            ORDER BY ticker
+        """
+        try:
+            df = db.query_df(sql, params)
+        except Exception:
+            return _empty_cached_table()
+
+        if len(df) == 0:
+            return _empty_cached_table()
+
+        columns = [
+            {"name": "代码", "id": "ticker"},
+            {"name": "市场", "id": "market"},
+            {"name": "数据条数", "id": "records"},
+            {"name": "起始日期", "id": "start_date"},
+            {"name": "最新日期", "id": "end_date"},
+        ]
+
+        data = df.to_dicts()
+        return dash_table.DataTable(
+            id="cached-data-table",
+            columns=columns,
+            data=data,
+            row_selectable="multi",
+            page_size=10,
+            style_table={"overflowX": "auto"},
+            style_cell={
+                "padding": "8px",
+                "fontSize": "13px",
+            },
+            style_header={
+                "backgroundColor": "#f8f9fa",
+                "fontWeight": "bold",
+            },
+            style_data_conditional=[
+                {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
+            ],
+        )
+
+    @app.callback(
+        Output("cached-table-container", "children", allow_duplicate=True),
+        Input("cache-delete-btn", "n_clicks"),
+        State("cached-data-table", "selected_rows"),
+        State("cached-data-table", "data"),
+        prevent_initial_call=True,
+    )
+    def delete_selected_rows(n_clicks, selected_rows, table_data):
+        if not selected_rows or not table_data:
+            return no_update
+
+        db = _get_db()
+        for idx in selected_rows:
+            row = table_data[idx]
+            ticker = row["ticker"]
+            try:
+                db.execute("DELETE FROM bars_daily WHERE ticker = ?", [ticker])
+                db.execute("DELETE FROM bars_minute WHERE ticker = ?", [ticker])
+                db.execute("DELETE FROM corporate_actions WHERE ticker = ?", [ticker])
+            except Exception:
+                continue
+
+        return _build_cached_table(db)
+
+
+def _get_db():
+    db_path = "./data/fisherquant.db"
+    db = DuckDBManager()
+    try:
+        db.connect(db_path, read_pool_size=4)
+        init_schema_from_path(db_path)
+    except Exception:
+        pass
+    return db
+
+
+def _build_cached_table(db):
+    try:
+        df = db.query_df("""
+            SELECT ticker, market,
+                   COUNT(*) AS records,
+                   MIN(trade_date) AS start_date,
+                   MAX(trade_date) AS end_date
+            FROM bars_daily
+            GROUP BY ticker, market
+            ORDER BY ticker
+        """)
+    except Exception:
+        return _empty_cached_table()
+
+    if len(df) == 0:
+        return _empty_cached_table()
+
+    columns = [
+        {"name": "代码", "id": "ticker"},
+        {"name": "市场", "id": "market"},
+        {"name": "数据条数", "id": "records"},
+        {"name": "起始日期", "id": "start_date"},
+        {"name": "最新日期", "id": "end_date"},
+    ]
+    return dash_table.DataTable(
+        id="cached-data-table",
+        columns=columns,
+        data=df.to_dicts(),
+        row_selectable="multi",
+        page_size=10,
+        style_table={"overflowX": "auto"},
+        style_cell={"padding": "8px", "fontSize": "13px"},
+        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
+        ],
+    )
+
+
+def _empty_cached_table():
+    return html.Div(
+        [
+            html.H5("暂无缓存数据", className="text-muted text-center mt-4"),
+            html.P('请先在"数据查询"标签页中搜索并获取数据', className="text-muted text-center"),
+        ]
+    )
+
 
 def _resolve_symbols(selected_symbol, batch_input):
     symbols = []
