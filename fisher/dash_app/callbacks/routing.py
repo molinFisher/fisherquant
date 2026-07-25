@@ -4,6 +4,7 @@ from fisher.dash_app.pages.home import create_home_layout
 from fisher.dash_app.pages.data_center import create_data_center_layout
 from fisher.dash_app.pages.strategy_center import create_strategy_center_layout
 from fisher.dash_app.pages.factor_center import create_factor_center_layout
+from fisher.dash_app.pages.backtest_center import create_backtest_center_layout
 
 PAGE_MAP = {
     "/": create_home_layout,
@@ -12,7 +13,7 @@ PAGE_MAP = {
     "/market-watch": lambda: html.Div([html.H3("行情看板"), html.P("建设中...")]),
     "/strategy-center": create_strategy_center_layout,
     "/factor-center": create_factor_center_layout,
-    "/backtest-center": lambda: html.Div([html.H3("回测中心"), html.P("建设中...")]),
+    "/backtest-center": create_backtest_center_layout,
     "/visual-dashboard": lambda: html.Div([html.H3("可视化看板"), html.P("建设中...")]),
     "/report-center": lambda: html.Div([html.H3("报告中心"), html.P("建设中...")]),
     "/settings": lambda: html.Div([html.H3("系统设置"), html.P("建设中...")]),
@@ -77,3 +78,6 @@ def register_all_callbacks(app):
 
     from fisher.dash_app.callbacks.factor_callbacks import register_factor_callbacks
     register_factor_callbacks(app)
+
+    from fisher.dash_app.callbacks.backtest_callbacks import register_backtest_callbacks
+    register_backtest_callbacks(app)
