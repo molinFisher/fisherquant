@@ -1,7 +1,12 @@
-from dash import Input, Output, callback
-from dash import html
+import logging
+
+from dash import Input, Output, callback, no_update
+from dash import html, dcc
 import dash_bootstrap_components as dbc
+from fisher.dash_app.services import get_data_service, get_auto_load_service
 from fisher.store.engine import DuckDBManager
+
+logger = logging.getLogger(__name__)
 
 
 def register_home_callbacks(app):
@@ -16,50 +21,25 @@ def register_home_callbacks(app):
     )
     def update_home_dashboard(pathname):
         if pathname not in (None, "/", "/home"):
-            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         try:
-            db = DuckDBManager()
-            if not db._initialized:
-                return "暂无数据", "0", "0", "0", "0", "最近更新: -"
-        except Exception:
-            return "暂无数据", "0", "0", "0", "0", "最近更新: -"
-
-        try:
-            tickers_df = db.query_df("SELECT COUNT(DISTINCT ticker) AS cnt FROM bars_daily")
-            total_tickers = str(tickers_df["cnt"][0]) if len(tickers_df) > 0 else "0"
-        except Exception:
+            svc = get_data_service()
+            stats = svc.get_cache_stats()
+            total_tickers = str(stats["total"])
+            ashare = str(stats["a_share"])
+            hk = str(stats["hk"])
+            records = str(stats["records"])
+            last_update = f"最近更新: {stats['last_update']}" if stats["last_update"] else "最近更新: -"
+        except Exception as e:
+            logger.error("Failed to get cache stats: %s", e)
             total_tickers = "0"
-
-        try:
-            ashare_df = db.query_df("SELECT COUNT(DISTINCT ticker) AS cnt FROM bars_daily WHERE market='a_share'")
-            ashare = str(ashare_df["cnt"][0]) if len(ashare_df) > 0 else "0"
-        except Exception:
             ashare = "0"
-
-        try:
-            hk_df = db.query_df("SELECT COUNT(DISTINCT ticker) AS cnt FROM bars_daily WHERE market='hk_connect'")
-            hk = str(hk_df["cnt"][0]) if len(hk_df) > 0 else "0"
-        except Exception:
             hk = "0"
-
-        try:
-            records_df = db.query_df("SELECT COUNT(*) AS cnt FROM bars_daily")
-            records = str(records_df["cnt"][0]) if len(records_df) > 0 else "0"
-        except Exception:
             records = "0"
-
-        try:
-            latest_df = db.query_df("SELECT MAX(trade_date) AS dt FROM bars_daily")
-            if len(latest_df) > 0 and latest_df["dt"][0] is not None:
-                last_update = f"最近更新: {latest_df['dt'][0]}"
-            else:
-                last_update = "最近更新: -"
-        except Exception:
             last_update = "最近更新: -"
 
-        recent_backtests_section = _build_recent_backtests(db)
-
+        recent_backtests_section = _build_recent_backtests()
         return (
             recent_backtests_section,
             total_tickers,
@@ -70,18 +50,64 @@ def register_home_callbacks(app):
         )
 
     @app.callback(
-        Output("quick-fetch", "n_clicks"),
-        Output("quick-strategy", "n_clicks"),
-        Output("quick-backtest", "n_clicks"),
-        Input("url", "pathname"),
+        Output("quick-nav-location", "href"),
+        Input("quick-fetch", "n_clicks"),
+        Input("quick-strategy", "n_clicks"),
+        Input("quick-backtest", "n_clicks"),
         prevent_initial_call=True,
     )
-    def quick_action_handler(pathname):
-        raise dash.exceptions.PreventUpdate
+    def quick_action_handler(fetch_clicks, strategy_clicks, backtest_clicks):
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return no_update
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        nav_map = {
+            "quick-fetch": "/data-center",
+            "quick-strategy": "/strategy-center",
+            "quick-backtest": "/backtest-center",
+        }
+        return nav_map.get(trigger_id, "/data-center")
+
+    @app.callback(
+        Output("auto-load-indicator", "children"),
+        Input("auto-load-poll", "n_intervals"),
+    )
+    def update_auto_load_indicator(n):
+        try:
+            svc = get_auto_load_service()
+            progress = svc.get_progress()
+        except Exception as e:
+            logger.error("Auto-load progress check failed: %s", e)
+            return html.Div()
+
+        phase = progress.get("phase", "idle")
+        current = progress.get("current", 0)
+        total = progress.get("total", 0)
+
+        if phase == "initial_load" and total > 0:
+            return html.Div(
+                dbc.Alert(
+                    f"⏳ 数据加载中，已加载 {current}/{total} 只",
+                    color="info", className="py-1 px-3 small mb-0",
+                    style={"fontSize": "14px"},
+                )
+            )
+        if phase in ("idle", "complete") and total > 0 and current >= total:
+            return html.Div(
+                dbc.Alert("✅ 数据就绪", color="success", className="py-1 px-3 small mb-0",
+                          style={"fontSize": "14px"})
+            )
+        if phase == "error":
+            return html.Div(
+                dbc.Alert("⚠️ 数据加载出错", color="warning", className="py-1 px-3 small mb-0",
+                          style={"fontSize": "14px"})
+            )
+        return html.Div()
 
 
-def _build_recent_backtests(db):
+def _build_recent_backtests():
     try:
+        db = DuckDBManager()
         orders_df = db.query_df("SELECT * FROM orders ORDER BY created_at DESC LIMIT 5")
         if len(orders_df) == 0:
             return "暂无回测记录"
@@ -101,5 +127,6 @@ def _build_recent_backtests(db):
                 )
             )
         return dbc.ListGroup(items)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to build recent backtests: %s", e)
         return "暂无回测记录"

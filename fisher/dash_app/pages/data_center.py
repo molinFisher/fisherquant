@@ -1,5 +1,8 @@
 import dash_bootstrap_components as dbc
-from dash import html, dcc, dash_table
+from dash import html, dcc, dash_table, Input, Output, callback, no_update
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def create_data_center_layout():
@@ -11,6 +14,7 @@ def create_data_center_layout():
                     dbc.Tab(label="数据查询", tab_id="tab-query", children=_create_query_tab()),
                     dbc.Tab(label="已缓存数据", tab_id="tab-cached", children=_create_cached_tab()),
                     dbc.Tab(label="高级功能", tab_id="tab-advanced", children=_create_advanced_tab()),
+                    dbc.Tab(label="自动加载", tab_id="tab-auto-load", children=_create_auto_load_tab()),
                 ],
                 id="data-center-tabs",
                 active_tab="tab-query",
@@ -151,6 +155,52 @@ def _create_query_tab():
     )
 
 
+def _create_auto_load_tab():
+    return dbc.Container(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader("自动加载进度"),
+                                dbc.CardBody(
+                                    [
+                                        html.Div(id="auto-load-progress-status", className="mb-2"),
+                                        dbc.Progress(id="auto-load-progress-bar", value=0, label="0%",
+                                                     className="mb-2", style={"height": "24px"}),
+                                        html.Div(id="auto-load-progress-detail", className="text-muted small"),
+                                    ]
+                                ),
+                            ],
+                            className="mb-3",
+                        ),
+                        width=8,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader("控制"),
+                                dbc.CardBody(
+                                    [
+                                        dbc.Button("开始自动加载", id="auto-load-start-btn",
+                                                   color="primary", className="w-100 mb-2"),
+                                        dbc.Button("暂停", id="auto-load-pause-btn",
+                                                   color="warning", className="w-100 mb-2"),
+                                        html.Div(id="auto-load-action-feedback", className="text-muted small mt-1"),
+                                    ]
+                                ),
+                            ]
+                        ),
+                        width=4,
+                    ),
+                ]
+            ),
+            dcc.Interval(id="auto-load-progress-poll", interval=5000),
+        ]
+    )
+
+
 def _create_financials_modal():
     return dbc.Modal(
         [
@@ -199,6 +249,76 @@ def _create_cached_tab():
             html.Div(id="cached-table-container"),
         ]
     )
+
+
+def register_data_center_callbacks(app):
+    from fisher.dash_app.services import get_auto_load_service
+
+    @app.callback(
+        Output("auto-load-progress-status", "children"),
+        Output("auto-load-progress-bar", "value"),
+        Output("auto-load-progress-bar", "label"),
+        Output("auto-load-progress-detail", "children"),
+        Input("auto-load-progress-poll", "n_intervals"),
+    )
+    def update_auto_load_progress(n):
+        try:
+            svc = get_auto_load_service()
+            progress = svc.get_progress()
+        except Exception as e:
+            logger.error("auto-load progress check failed: %s", e)
+            return "状态检查失败", 0, "0%", ""
+
+        phase = progress.get("phase", "idle")
+        current = int(progress.get("current", 0))
+        total = int(progress.get("total", 0))
+
+        if phase == "initial_load" and total > 0:
+            pct = int(current * 100 / total)
+            return (
+                dbc.Badge("加载中", color="info", className="me-2"),
+                pct, f"{current}/{total} ({pct}%)",
+                f"正在加载第 {current}/{total} 个标的..."
+            )
+        if phase == "complete" and total > 0:
+            return (
+                dbc.Badge("已完成", color="success", className="me-2"),
+                100, f"{total}/{total} (100%)",
+                f"共加载 {total} 个标的，数据就绪"
+            )
+        if phase == "error":
+            return (
+                dbc.Badge("出错", color="danger", className="me-2"),
+                0, "错误",
+                progress.get("message", "加载过程发生错误")
+            )
+        return (
+            dbc.Badge("空闲", color="secondary", className="me-2"),
+            0, "0%",
+            "自动加载未运行，请点击「开始自动加载」"
+        )
+
+    @app.callback(
+        Output("auto-load-action-feedback", "children"),
+        Input("auto-load-start-btn", "n_clicks"),
+        Input("auto-load-pause-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def handle_auto_load_action(start_clicks, pause_clicks):
+        ctx = callback.context
+        if not ctx.triggered:
+            return no_update
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        try:
+            svc = get_auto_load_service()
+            if trigger_id == "auto-load-start-btn":
+                result = svc.check_and_start()
+                return f"操作: {result.get('phase', 'started')}"
+            else:
+                return "暂停功能需要APScheduler支持"
+        except Exception as e:
+            logger.error("auto-load action failed: %s", e)
+            return f"操作失败: {e}"
 
 
 def _create_advanced_tab():

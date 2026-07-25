@@ -83,6 +83,9 @@ def register_all_callbacks(app):
     from fisher.dash_app.callbacks.data_export_callbacks import register_data_export_callbacks
     register_data_export_callbacks(app)
 
+    from fisher.dash_app.pages.data_center import register_data_center_callbacks
+    register_data_center_callbacks(app)
+
     from fisher.dash_app.callbacks.strategy_crud_callbacks import register_strategy_crud_callbacks
     register_strategy_crud_callbacks(app)
 

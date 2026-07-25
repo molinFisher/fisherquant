@@ -1,11 +1,14 @@
 import dash_bootstrap_components as dbc
-from dash import html
+from dash import html, dcc
 
 
 def create_home_layout():
     return dbc.Container(
         [
+            dcc.Location(id="quick-nav-location"),
+            dcc.Interval(id="auto-load-poll", interval=5000),
             html.H3("首页仪表盘", className="mb-4"),
+            html.Div(id="auto-load-indicator", className="mb-3"),
             dbc.Row(
                 [
                     dbc.Col(
