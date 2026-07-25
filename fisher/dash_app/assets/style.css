@@ -1,0 +1,131 @@
+.app-container {
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+}
+
+.main-row {
+    min-height: 100vh;
+}
+
+.sidebar-col {
+    min-height: 100vh;
+    position: sticky;
+    top: 0;
+}
+
+.sidebar {
+    background: #1a1d23;
+    min-height: 100vh;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-brand {
+    padding: 8px 12px;
+    margin-bottom: 4px;
+}
+
+.sidebar-brand h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+.nav-group {
+    margin-bottom: 8px;
+}
+
+.nav-group-title {
+    color: #6c757d;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    padding: 8px 12px 4px 12px;
+    letter-spacing: 1px;
+    font-weight: 500;
+}
+
+.nav-item {
+    color: #adb5bd !important;
+    padding: 8px 12px !important;
+    border-radius: 6px !important;
+    cursor: pointer;
+    margin: 2px 4px;
+    font-size: 0.875rem;
+    text-decoration: none !important;
+}
+
+.nav-item:hover {
+    background: #2a2d35;
+    color: #fff !important;
+}
+
+.nav-item.active {
+    background: #0d6efd;
+    color: white !important;
+}
+
+.nav-item.active:hover {
+    background: #0b5ed7;
+}
+
+.content-col {
+    padding: 24px;
+    background: #f8f9fa;
+    min-height: 100vh;
+}
+
+.sidebar-footer {
+    padding: 8px 12px;
+}
+
+.toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 9999;
+}
+
+.stat-card {
+    border: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.stat-card .card-body {
+    padding: 16px;
+}
+
+.card {
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+@media (max-width: 1024px) {
+    .sidebar-col {
+        position: fixed;
+        left: -100%;
+        top: 0;
+        z-index: 1000;
+        transition: left 0.3s;
+    }
+
+    .sidebar-col.open {
+        left: 0;
+    }
+
+    .content-col {
+        width: 100%;
+    }
+}
+
+@media (min-width: 1024px) and (max-width: 1399px) {
+    .sidebar-col {
+        width: 240px;
+    }
+}
+
+@media (min-width: 1400px) {
+    .sidebar-col {
+        width: 260px;
+    }
+}

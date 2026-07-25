@@ -19,6 +19,9 @@ dependencies = [
     "akshare",
     "httpx",
     "pyarrow",
+    "dash>=2.6",
+    "dash-bootstrap-components",
+    "diskcache",
 ]
 
 [project.optional-dependencies]
