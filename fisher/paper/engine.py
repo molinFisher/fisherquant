@@ -1,6 +1,7 @@
 from ..broker.adapter import BrokerAdapter
 from ..event.types import Bar, OrderSide, OrderStatus
 from ..oms.orders import Order
+from ..oms.engine import OMSEngine
 from ..market.rules import ExchangeRules
 from ..config.schemas import AssetFeeConfig, FeesConfig
 from .fees import FeeCalculator
@@ -20,6 +21,7 @@ class PaperEngine(BrokerAdapter):
         self._orders: dict[str, Order] = {}
         self._positions: dict[str, dict] = {}
         self._rules = rules
+        self._oms = OMSEngine()
 
         if isinstance(fee_config, FeesConfig):
             self._fee_calc = FeeCalculator.from_config(fee_config)
@@ -33,7 +35,7 @@ class PaperEngine(BrokerAdapter):
     def submit_order(self, order: Order) -> Order:
         if order.order_id in self._orders:
             raise ValueError(f"Order {order.order_id} already submitted")
-        order.status = OrderStatus.PENDING
+        self._oms.submit(order)
         self._orders[order.order_id] = order
         return order
 
@@ -41,7 +43,7 @@ class PaperEngine(BrokerAdapter):
         order = self._orders.get(order_id)
         if order is None or order.is_terminal:
             return False
-        order.status = OrderStatus.CANCELLED
+        self._oms.cancel(order_id)
         return True
 
     def get_order(self, order_id: str) -> Order | None:
@@ -77,10 +79,7 @@ class PaperEngine(BrokerAdapter):
             else:
                 commission = 0.0
 
-            order.filled_qty = order.quantity
-            order.filled_price = fill_price
-            order.commission = commission
-            order.status = OrderStatus.FILLED
+            self._oms.update_fill(order.order_id, order.quantity, fill_price, commission)
 
             ticker = order.ticker
             if ticker not in self._positions:

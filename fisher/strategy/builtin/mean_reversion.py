@@ -12,11 +12,13 @@ class MeanReversionStrategy(Strategy):
         self._window = self.params.get("window", 20)
         self._std_mult = self.params.get("std_mult", 2.0)
         self._prices: dict[str, deque[float]] = {}
+        self._last_state: dict[str, str | None] = {}
 
     async def on_bar(self, bar: Bar):
         ticker = bar.ticker
         if ticker not in self._prices:
             self._prices[ticker] = deque(maxlen=self._window)
+            self._last_state[ticker] = None
         self._prices[ticker].append(bar.close)
 
         prices = self._prices[ticker]
@@ -30,7 +32,17 @@ class MeanReversionStrategy(Strategy):
         lower_band = sma - self._std_mult * std
         upper_band = sma + self._std_mult * std
 
+        current_state = None
         if bar.close <= lower_band:
-            self.emit_signal(ticker, bar.market, OrderSide.BUY, 100, bar.close, 0.7, "mean_reversion_oversold")
+            current_state = "oversold"
         elif bar.close >= upper_band:
-            self.emit_signal(ticker, bar.market, OrderSide.SELL, 100, bar.close, 0.7, "mean_reversion_overbought")
+            current_state = "overbought"
+        else:
+            current_state = "neutral"
+
+        if current_state != self._last_state.get(ticker):
+            if current_state == "oversold":
+                self.emit_signal(ticker, bar.market, OrderSide.BUY, 100, bar.close, 0.7, "mean_reversion_oversold")
+            elif current_state == "overbought":
+                self.emit_signal(ticker, bar.market, OrderSide.SELL, 100, bar.close, 0.7, "mean_reversion_overbought")
+            self._last_state[ticker] = current_state

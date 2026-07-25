@@ -43,6 +43,27 @@ class _ColorFormatter(logging.Formatter):
         return msg
 
 
+_ROTATION_MAP = {
+    "minute": "M",
+    "hourly": "H",
+    "daily": "D",
+    "midnight": "midnight",
+    "weekly": "W0",
+}
+
+_UNIT_MAP = {"h": "H", "m": "M", "d": "D", "s": "S", "w": "W0"}
+
+
+def _parse_rotation(rotation: str) -> str:
+    low = rotation.lower()
+    if low in _ROTATION_MAP:
+        return _ROTATION_MAP[low]
+    if low[0].isdigit() and len(low) >= 2:
+        unit = low[-1]
+        return _UNIT_MAP.get(unit, "D")
+    return "D"
+
+
 def init_logging(cfg: LoggingConfig) -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, cfg.level.upper(), logging.INFO))
@@ -50,11 +71,7 @@ def init_logging(cfg: LoggingConfig) -> None:
     log_dir = Path(cfg.dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    rotation = cfg.rotation
-    if rotation[0].isdigit():
-        when = rotation[-1]
-    else:
-        when = rotation[0]
+    when = _parse_rotation(cfg.rotation)
     json_log = log_dir / "fisher.log"
     backup_count = int(cfg.retention.rstrip("d"))
     json_handler = TimedRotatingFileHandler(

@@ -12,10 +12,11 @@ class RiskEngine:
         order: Order,
         pos_svc: PositionService | None,
         capital: float,
+        market_price: float = 0.0,
     ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         for rule in self._rules:
-            approved, reason = rule.check(order, pos_svc, capital)
+            approved, reason = rule.check(order, pos_svc, capital, market_price)
             if not approved and reason:
                 reasons.append(reason)
         return len(reasons) == 0, reasons

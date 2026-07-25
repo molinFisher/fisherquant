@@ -35,8 +35,8 @@ class RSI14(Factor):
         delta = pl.col("close").diff()
         gain = delta.clip(lower_bound=0)
         loss = (-delta).clip(lower_bound=0)
-        avg_gain = gain.rolling_mean(14)
-        avg_loss = loss.rolling_mean(14)
+        avg_gain = gain.ewm_mean(span=27, adjust=False)
+        avg_loss = loss.ewm_mean(span=27, adjust=False)
         rs = avg_gain / avg_loss
         return df.with_columns(
             (100 - (100 / (1 + rs))).alias(self.name)

@@ -20,13 +20,10 @@ A_SHARE_FEE = AssetFeeConfig(
 
 class TestOrderToPositionPipeline:
     def test_oms_to_paper_to_position(self):
-        oms = OMSEngine()
         paper = PaperEngine(A_SHARE_FEE, initial_capital=100000.0)
         positions = PositionService()
 
         order = create_order("000001.SZ", "a_share", "stock", OrderSide.BUY, 100, 10.0)
-        oms.submit(order)
-        oms.update_status(order.order_id, OrderStatus.SUBMITTED)
         paper.submit_order(order)
 
         bar = Bar(
@@ -47,7 +44,6 @@ class TestOrderToPositionPipeline:
         assert pos["avg_cost"] > 0
 
     def test_full_pipeline_with_risk_check(self):
-        oms = OMSEngine()
         paper = PaperEngine(A_SHARE_FEE, initial_capital=100000.0)
         positions = PositionService()
         risk = RiskEngine(rules=[
@@ -59,8 +55,6 @@ class TestOrderToPositionPipeline:
         approved, reasons = risk.check(order, positions, 100000.0)
         assert approved, f"Risk check failed: {reasons}"
 
-        oms.submit(order)
-        oms.update_status(order.order_id, OrderStatus.SUBMITTED)
         paper.submit_order(order)
 
         bar = Bar(
@@ -88,13 +82,10 @@ class TestOrderToPositionPipeline:
         assert approved is False
 
     def test_multiple_orders_same_ticker_t_plus(self):
-        oms = OMSEngine()
         paper = PaperEngine(A_SHARE_FEE, initial_capital=100000.0)
         positions = PositionService()
 
         o1 = create_order("000001.SZ", "a_share", "stock", OrderSide.BUY, 100, 10.0)
-        oms.submit(o1)
-        oms.update_status(o1.order_id, OrderStatus.SUBMITTED)
         paper.submit_order(o1)
 
         bar = Bar(

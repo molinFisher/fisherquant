@@ -13,6 +13,7 @@ ORDER_STATUS_TRANSITIONS: dict[OrderStatus, list[OrderStatus]] = {
     OrderStatus.PENDING: [
         OrderStatus.SUBMITTED,
         OrderStatus.ACKED,
+        OrderStatus.PARTIALLY_FILLED,
         OrderStatus.REJECTED,
         OrderStatus.CANCELLED,
     ],

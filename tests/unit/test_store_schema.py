@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 from fisher.store.engine import DuckDBEngine
-from fisher.store.schema import init_schema, SCHEMA_VERSION
+from fisher.store.schema import init_schema, migrate, SCHEMA_VERSION
 
 
 class TestInitSchema:
@@ -70,3 +70,23 @@ class TestOrdersTable:
 
             result = engine.query_df("SELECT status FROM orders WHERE order_id='oid-1'")
             assert result["status"][0] == "pending"
+
+
+class TestMigration:
+    def test_migration_to_v2_adds_turnover_column(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = DuckDBEngine(str(Path(d) / "test.db"))
+            init_schema(engine)
+            engine.execute("DELETE FROM schema_version")
+            engine.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                [1],
+            )
+            migrate(engine)
+            row = engine.query_df("SELECT MAX(version) AS v FROM schema_version")
+            assert row["v"][0] >= 2
+            cols = engine.query_df(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='bars_daily'"
+            )
+            col_names = set(cols["column_name"].to_list())
+            assert "turnover" in col_names

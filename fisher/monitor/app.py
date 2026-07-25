@@ -1,10 +1,9 @@
-from fastapi import FastAPI, Request, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Depends, HTTPException, status, Form
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import HTMLResponse
 from pathlib import Path
+from jinja2 import Environment, FileSystemLoader
 import os
 
 from .auth import create_access_token, authenticate, get_current_user, CREDENTIALS_DIR, CREDENTIALS_FILE
@@ -17,12 +16,16 @@ templates_dir = Path(__file__).parent / "templates"
 if not templates_dir.exists():
     templates_dir = Path(__file__).parent.parent.parent / "fisher" / "monitor" / "templates"
 
-templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.exists() else None
+_env = None
+if templates_dir.exists():
+    _env = Environment(loader=FileSystemLoader(str(templates_dir)))
 
 
 def _get_template_response(request: Request, name: str, **ctx) -> HTMLResponse:
-    if templates:
-        return templates.TemplateResponse(name, {"request": request, **ctx})
+    if _env:
+        template = _env.get_template(name)
+        content = template.render(request=request, **ctx)
+        return HTMLResponse(content)
     return HTMLResponse(f"<html><body><h1>{name}</h1></body></html>")
 
 
@@ -59,9 +62,6 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(title="FisherQuant Monitor", lifespan=lifespan)
-
-    from fastapi import Form
-    from fastapi.responses import RedirectResponse
 
     @app.get("/login")
     async def login_page(request: Request):

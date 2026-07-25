@@ -7,6 +7,7 @@ from fisher.risk.pre_trade import (
     DailyLossLimitRule,
     PriceLimitRule,
     BlacklistRule,
+    SectorLimitRule,
 )
 from fisher.position.service import PositionService
 
@@ -103,6 +104,42 @@ class TestPriceLimitRule:
         assert rule._check_price_limit(order, 10.9) is True
         assert rule._check_price_limit(order, 11.0) is False
 
+    def test_with_market_price_rejects_above_limit(self):
+        rule = PriceLimitRule(upper=0.095)
+        order = _make_order(price=10.0)
+        approved, reason = rule.check(order, None, 100000.0, market_price=11.5)
+        assert approved is False
+        assert "PriceLimit" in reason
+
+    def test_with_market_price_approves_within_limit(self):
+        rule = PriceLimitRule(upper=0.095)
+        order = _make_order(price=10.0)
+        approved, reason = rule.check(order, None, 100000.0, market_price=10.5)
+        assert approved is True
+
+
+class TestSectorLimitRule:
+    def test_no_sector_map_approved(self):
+        rule = SectorLimitRule(max_pct=0.3)
+        order = _make_order("000001.SZ", price=10.0, quantity=100)
+        approved, _ = rule.check(order, None, 100000.0)
+        assert approved is True
+
+    def test_within_sector_limit(self):
+        rule = SectorLimitRule(max_pct=0.3, sector_map={"000001.SZ": "tech"})
+        order = _make_order("000001.SZ", price=10.0, quantity=100)
+        approved, _ = rule.check(order, None, 100000.0)
+        assert approved is True
+
+    def test_exceeds_sector_limit_rejected(self):
+        rule = SectorLimitRule(max_pct=0.1, sector_map={"000001.SZ": "tech"})
+        pos_svc = _make_positions_svc({"000001.SZ": 200})
+        pos_svc.mark_to_market({"000001.SZ": 50.0})
+        order = _make_order("000001.SZ", price=50.0, quantity=100)
+        approved, reason = rule.check(order, pos_svc, 100000.0)
+        assert approved is False
+        assert "SectorLimit" in reason
+
 
 class TestBlacklistRule:
     def test_not_blacklisted_approved(self):
@@ -159,9 +196,9 @@ class TestRiskEngine:
     def test_engine_runs_all_rules_even_after_rejection(self):
         counts = []
         class CountingRule(MaxPositionRule):
-            def check(self, order, pos_svc, capital):
+            def check(self, order, pos_svc, capital, market_price=0.0):
                 counts.append(1)
-                return super().check(order, pos_svc, capital)
+                return super().check(order, pos_svc, capital, market_price)
 
         engine = RiskEngine(rules=[
             CountingRule(max_pct=0.2),

@@ -66,6 +66,17 @@ class TestPositionServiceBasic:
         pos = svc.get_position("000001.SZ")
         assert pos is None
 
+    def test_sell_more_than_held_raises(self):
+        svc = PositionService()
+        o1 = _make_order(quantity=50, price=10.0)
+        _fill_order(o1, 10.0, 5.0)
+        svc.update_on_fill(o1, 10.0)
+
+        o2 = _make_order(side=OrderSide.SELL, quantity=100, price=11.0)
+        _fill_order(o2, 11.0, 5.0)
+        with pytest.raises(ValueError, match="Cannot sell"):
+            svc.update_on_fill(o2, 11.0)
+
     def test_get_position_nonexistent(self):
         svc = PositionService()
         assert svc.get_position("NOPE") is None

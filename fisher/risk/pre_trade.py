@@ -11,6 +11,7 @@ class PreTradeRule(ABC):
         order: Order,
         pos_svc: PositionService | None,
         capital: float,
+        market_price: float = 0.0,
     ) -> tuple[bool, str]:
         ...
 
@@ -24,6 +25,7 @@ class MaxPositionRule(PreTradeRule):
         order: Order,
         pos_svc: PositionService | None,
         capital: float,
+        market_price: float = 0.0,
     ) -> tuple[bool, str]:
         position_value = 0.0
         if pos_svc is not None:
@@ -50,6 +52,7 @@ class DailyLossLimitRule(PreTradeRule):
         order: Order,
         pos_svc: PositionService | None,
         capital: float,
+        market_price: float = 0.0,
     ) -> tuple[bool, str]:
         loss_pct = abs(self._cumulative_pnl) / capital if capital > 0 else 0.0
         if self._cumulative_pnl < 0 and loss_pct >= self._max_loss_pct:
@@ -73,7 +76,13 @@ class PriceLimitRule(PreTradeRule):
         order: Order,
         pos_svc: PositionService | None,
         capital: float,
+        market_price: float = 0.0,
     ) -> tuple[bool, str]:
+        if market_price <= 0:
+            return True, ""
+        if not self._check_price_limit(order, market_price):
+            side = "up" if order.side == OrderSide.BUY else "down"
+            return False, f"PriceLimit: price outside {side} limit"
         return True, ""
 
     def _check_price_limit(self, order: Order, market_price: float) -> bool:
@@ -93,7 +102,35 @@ class BlacklistRule(PreTradeRule):
         order: Order,
         pos_svc: PositionService | None,
         capital: float,
+        market_price: float = 0.0,
     ) -> tuple[bool, str]:
         if order.ticker in self._blacklist:
             return False, f"Blacklist: {order.ticker} is blacklisted"
+        return True, ""
+
+
+class SectorLimitRule(PreTradeRule):
+    def __init__(self, max_pct: float = 0.3, sector_map: dict[str, str] | None = None):
+        self._max_pct = max_pct
+        self._sector_map = sector_map or {}
+
+    def check(
+        self,
+        order: Order,
+        pos_svc: PositionService | None,
+        capital: float,
+        market_price: float = 0.0,
+    ) -> tuple[bool, str]:
+        sector = self._sector_map.get(order.ticker)
+        if sector is None:
+            return True, ""
+        sector_exposure = 0.0
+        if pos_svc is not None:
+            for ticker, pos in pos_svc.get_all_positions().items():
+                if self._sector_map.get(ticker) == sector:
+                    sector_exposure += pos.get("market_value", 0.0)
+        new_exposure = order.price * order.quantity + sector_exposure
+        max_allowed = capital * self._max_pct
+        if new_exposure > max_allowed:
+            return False, f"SectorLimit: sector {sector} exposure {new_exposure:.2f} > {max_allowed:.2f}"
         return True, ""

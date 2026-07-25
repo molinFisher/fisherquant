@@ -88,7 +88,10 @@ class TestFactorEngineWithCache:
             pass
 
     def _make_df(self):
-        return pl.DataFrame({"close": [10.0, 10.5, 11.0, 10.8, 11.2]})
+        return pl.DataFrame({
+            "trade_date": ["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-04", "2025-01-05"],
+            "close": [10.0, 10.5, 11.0, 10.8, 11.2],
+        })
 
     def test_cache_table_initialized(self):
         FactorRegistry.register(TestPriceFactor())

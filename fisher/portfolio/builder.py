@@ -21,7 +21,7 @@ class PortfolioBuilder:
     ) -> list[OrderPending]:
         merged = self._merge_signals(signals)
         weights = self._compute_weights(merged, capital)
-        orders = self._weights_to_orders(weights, capital)
+        orders = self._weights_to_orders(weights, merged, capital)
         return orders
 
     def _merge_signals(self, signals: list[Signal]) -> dict[str, dict]:
@@ -34,14 +34,26 @@ class PortfolioBuilder:
             if len(sigs) > 1 and self.conflict_mode == "skip_conflict":
                 continue
             if self.conflict_mode == "weighted_merge":
-                total_qty = sum(s.quantity for s in sigs)
-                avg_confidence = sum(s.confidence for s in sigs) / len(sigs)
+                buy_sigs = [s for s in sigs if s.side == OrderSide.BUY]
+                sell_sigs = [s for s in sigs if s.side == OrderSide.SELL]
+                buy_qty = sum(s.quantity for s in buy_sigs)
+                sell_qty = sum(s.quantity for s in sell_sigs)
+                if buy_qty == 0 and sell_qty == 0:
+                    continue
+                if buy_qty >= sell_qty:
+                    net_qty = buy_qty - sell_qty
+                    net_side = OrderSide.BUY
+                else:
+                    net_qty = sell_qty - buy_qty
+                    net_side = OrderSide.SELL
+                all_qtys = [s.quantity for s in sigs]
+                avg_confidence = sum(s.confidence * s.quantity for s in sigs) / sum(all_qtys) if all_qtys else 0.0
                 dominant = max(sigs, key=lambda s: s.confidence)
                 merged[ticker] = {
                     "ticker": ticker,
                     "market": dominant.market,
-                    "side": dominant.side,
-                    "quantity": total_qty,
+                    "side": net_side,
+                    "quantity": max(net_qty, 0),
                     "confidence": avg_confidence,
                 }
             elif self.conflict_mode == "first_wins":
@@ -73,18 +85,19 @@ class PortfolioBuilder:
             return kelly(merged)
         return equal_weight(merged, self.max_positions)
 
-    def _weights_to_orders(self, weights: dict, capital: float) -> list[OrderPending]:
+    def _weights_to_orders(self, weights: dict, merged: dict, capital: float) -> list[OrderPending]:
         orders: list[OrderPending] = []
         for ticker, weight in weights.items():
             allocation = capital * weight
             if allocation <= 0:
                 continue
+            info = merged.get(ticker, {})
             orders.append(
                 OrderPending(
                     ticker=ticker,
-                    market="a_share",
-                    side=OrderSide.BUY,
-                    quantity=1,
+                    market=info.get("market", "a_share"),
+                    side=info.get("side", OrderSide.BUY),
+                    quantity=info.get("quantity", 0),
                     price=allocation,
                     order_type="limit",
                     status=OrderStatus.PENDING,

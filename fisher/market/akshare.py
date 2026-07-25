@@ -1,5 +1,7 @@
 # fisher/market/akshare.py
+import asyncio
 import logging
+import traceback
 import akshare as ak
 from .gateway import MarketGateway
 from .model import Bar
@@ -32,16 +34,17 @@ class AkshareAdapter(MarketGateway):
         try:
             code, market = self._parse_ticker(ticker)
             if frequency == "1d":
-                df = ak.stock_zh_a_hist(
+                df = await asyncio.to_thread(
+                    ak.stock_zh_a_hist,
                     symbol=code, period="daily",
-                    start_date=start, end_date=end, adjust="qfq"
+                    start_date=start, end_date=end, adjust="qfq",
                 )
                 return self._df_to_bars(df, ticker)
             else:
                 logger.warning("Minute bars not supported by akshare free tier")
                 return []
-        except Exception as e:
-            logger.error("Failed to fetch bars for %s: %s", ticker, e)
+        except Exception:
+            logger.error("Failed to fetch bars for %s:\n%s", ticker, traceback.format_exc())
             return []
 
     def _parse_ticker(self, ticker: str) -> tuple[str, str]:

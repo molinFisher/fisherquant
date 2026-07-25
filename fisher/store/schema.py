@@ -1,6 +1,6 @@
 from .engine import DuckDBEngine
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _TABLES = [
     """
@@ -123,8 +123,30 @@ def init_schema(engine: DuckDBEngine) -> None:
         )
 
 
+_MIGRATIONS: dict[int, list[str]] = {
+    2: [
+        "ALTER TABLE bars_daily ADD COLUMN IF NOT EXISTS turnover DOUBLE DEFAULT 0.0",
+        "ALTER TABLE bars_minute ADD COLUMN IF NOT EXISTS turnover DOUBLE DEFAULT 0.0",
+    ],
+}
+
+
 def migrate(engine: DuckDBEngine) -> None:
     row = engine.query_df("SELECT MAX(version) AS v FROM schema_version")
     current = row["v"][0] or 0
     if current < SCHEMA_VERSION:
         init_schema(engine)
+
+    current_after_init = engine.query_df("SELECT MAX(version) AS v FROM schema_version")
+    current = current_after_init["v"][0] or 0
+
+    for version in sorted(_MIGRATIONS.keys()):
+        if version <= current:
+            continue
+        for ddl in _MIGRATIONS[version]:
+            engine.execute(ddl)
+        engine.execute(
+            "INSERT INTO schema_version (version) VALUES (?)",
+            [version],
+        )
+        current = version

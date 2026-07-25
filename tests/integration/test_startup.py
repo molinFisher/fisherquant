@@ -150,7 +150,6 @@ class TestFullSystemStartup:
         from fisher.config.schemas import AssetFeeConfig
 
         fee = AssetFeeConfig(commission_rate=0.00025, min_commission=5.0)
-        oms = OMSEngine()
         paper = PaperEngine(fee, initial_capital=100000.0)
         positions = PositionService()
         risk = RiskEngine(rules=[MaxPositionRule(max_pct=0.2)])
@@ -160,7 +159,6 @@ class TestFullSystemStartup:
         approved, reasons = risk.check(order, positions, 100000.0)
         assert approved, f"Risk check failed: {reasons}"
 
-        oms.submit(order)
         paper.submit_order(order)
 
         bar = Bar(

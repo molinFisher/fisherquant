@@ -71,7 +71,7 @@ class BacktestEngine:
                 market=o.market,
                 asset_type="stock",
                 side=o.side,
-                quantity=100,
+                quantity=max(o.quantity, 1),
                 price=o.price,
                 order_type=o.order_type,
             )

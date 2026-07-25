@@ -37,6 +37,11 @@ class PositionService:
             pos["avg_cost"] = round(total_cost / total_qty, 4) if total_qty > 0 else 0.0
         else:
             pos["quantity"] -= order.filled_qty
+            if pos["quantity"] < 0:
+                raise ValueError(
+                    f"Cannot sell {order.filled_qty} shares of {ticker}: "
+                    f"only {pos['quantity'] + order.filled_qty} shares held"
+                )
             if pos["quantity"] <= 0:
                 self._positions.pop(ticker)
                 self._t1_pending.pop(ticker, None)

@@ -2,7 +2,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Callable, Awaitable
-from collections import defaultdict
+from collections import defaultdict, deque
 from .types import Event
 from ..config.schemas import EventConfig
 
@@ -25,6 +25,8 @@ class EventBus(ABC):
 class AsyncioEventBus(EventBus):
     def __init__(self):
         self._handlers: dict[str, list[Handler]] = defaultdict(list)
+        self._tasks: set[asyncio.Task] = set()
+        self._sync_queue: deque = deque()
 
     def subscribe(self, event_type: str, handler: Handler) -> None:
         if handler not in self._handlers[event_type]:
@@ -36,18 +38,25 @@ class AsyncioEventBus(EventBus):
 
     def publish(self, event: Event) -> None:
         event_type = event.__event_type__
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            raise RuntimeError(
+                "publish() called from non-async context. "
+                "Use publish_sync() for synchronous callers."
+            )
         for handler in self._handlers.get(event_type, []):
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is None:
-                logger.warning(
-                    "No running event loop, cannot schedule handler for %s",
-                    event_type,
-                )
-                continue
-            asyncio.create_task(self._safe_call(handler, event))
+            task = asyncio.create_task(self._safe_call(handler, event))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    def publish_sync(self, event: Event) -> None:
+        self._sync_queue.append(event)
+
+    def drain_sync(self) -> list[Event]:
+        events = list(self._sync_queue)
+        self._sync_queue.clear()
+        return events
 
     async def _safe_call(self, handler: Handler, event: Event) -> None:
         try:
@@ -57,6 +66,10 @@ class AsyncioEventBus(EventBus):
                 "Handler for event %s raised exception",
                 event.__event_type__,
             )
+
+    async def flush(self) -> None:
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
 
 class RedisEventBus(EventBus):

@@ -47,6 +47,13 @@ class TestWeightMethods:
         assert len(weights) == 4
         assert abs(sum(weights.values()) - 1.0) < 0.001
 
+    def test_risk_parity_with_vol_data(self):
+        merged = {"A": {"vol": 0.20}, "B": {"vol": 0.10}}
+        weights = risk_parity(merged, 100000)
+        assert len(weights) == 2
+        assert abs(sum(weights.values()) - 1.0) < 0.001
+        assert weights["A"] < weights["B"]
+
     def test_risk_parity_empty(self):
         weights = risk_parity({}, 100000)
         assert weights == {}
@@ -56,6 +63,12 @@ class TestWeightMethods:
         weights = kelly(merged)
         assert len(weights) == 2
         assert abs(sum(weights.values()) - 1.0) < 0.001
+
+    def test_kelly_with_confidence(self):
+        merged = {"A": {"confidence": 0.7, "win_loss_ratio": 2.0}, "B": {"confidence": 0.3, "win_loss_ratio": 1.0}}
+        weights = kelly(merged)
+        assert len(weights) >= 1
+        assert abs(weights["A"] - 0.55) < 0.01
 
     def test_kelly_empty(self):
         weights = kelly({})
@@ -95,6 +108,29 @@ class TestPortfolioBuilder:
         orders = builder.build_orders(signals, 100000)
         assert len(orders) == 1
         assert orders[0].ticker == "A"
+
+    def test_conflict_weighted_merge_nets_buy_sell(self):
+        builder = PortfolioBuilder(conflict_mode="weighted_merge")
+        signals = [
+            _make_signal("A", OrderSide.BUY, 300, 0.8),
+            _make_signal("A", OrderSide.SELL, 200, 0.6),
+        ]
+        orders = builder.build_orders(signals, 100000)
+        assert len(orders) == 1
+        assert orders[0].ticker == "A"
+        assert orders[0].side == OrderSide.BUY
+        assert orders[0].quantity == 100
+
+    def test_conflict_weighted_sell_dominates(self):
+        builder = PortfolioBuilder(conflict_mode="weighted_merge")
+        signals = [
+            _make_signal("A", OrderSide.BUY, 50, 0.3),
+            _make_signal("A", OrderSide.SELL, 100, 0.8),
+        ]
+        orders = builder.build_orders(signals, 100000)
+        assert len(orders) == 1
+        assert orders[0].side == OrderSide.SELL
+        assert orders[0].quantity == 50
 
     def test_conflict_first_wins(self):
         builder = PortfolioBuilder(conflict_mode="first_wins")

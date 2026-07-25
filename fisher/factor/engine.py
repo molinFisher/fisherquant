@@ -41,7 +41,7 @@ class FactorEngine:
                     result = result.with_columns(s)
                 continue
 
-            orig_cols = set(result.columns)
+            orig_cols = set(df.columns)
             computed = factor.compute(df)
             added_cols = [c for c in computed.columns if c not in orig_cols]
             for col_name in added_cols:
@@ -56,7 +56,8 @@ class FactorEngine:
         col_names: list[str],
         df: pl.DataFrame,
     ) -> list[pl.Series] | None:
-        trade_date_col = "trade_date" if "trade_date" in df.columns else None
+        if "trade_date" not in df.columns:
+            return None
         series_list = []
         for col_name in col_names:
             cached = self._db.query_df(
@@ -70,7 +71,7 @@ class FactorEngine:
                 date_map[row[0]] = row[1]
             values = []
             for i in range(len(df)):
-                td = str(df[trade_date_col][i]) if trade_date_col else str(i)
+                td = str(df["trade_date"][i])
                 if td not in date_map:
                     return None
                 values.append(date_map[td])
@@ -83,14 +84,15 @@ class FactorEngine:
         columns: dict[str, pl.Series],
         df: pl.DataFrame,
     ) -> None:
+        if "trade_date" not in df.columns:
+            return
         for factor_name, col in columns.items():
             rows = []
-            trade_date_col = "trade_date" if "trade_date" in df.columns else None
             for i in range(len(col)):
                 val = col[i]
                 if val is None:
                     continue
-                trade_date = df[trade_date_col][i] if trade_date_col else str(i)
+                trade_date = df["trade_date"][i]
                 rows.append([ticker, str(trade_date), factor_name, float(val)])
             if rows:
                 self._db.execute_many(

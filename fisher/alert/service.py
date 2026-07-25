@@ -1,6 +1,9 @@
+import logging
 import time
 import sys
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 Callback = Callable[[dict], None]
 
@@ -40,4 +43,4 @@ class AlertService:
             try:
                 callback(event)
             except Exception:
-                pass
+                logger.exception("Alert callback for event %s raised exception", event_type)

@@ -15,9 +15,14 @@ class TestAsyncioEventBus:
 
         bus.subscribe("bar", handler)
         bar = Bar(ticker="000001.SZ", close=10.0)
-        bus.publish(bar)
 
-        assert len(received) == 0  # handlers run async via create_task
+        with pytest.raises(RuntimeError, match="publish_sync"):
+            bus.publish(bar)
+
+        bus.publish_sync(bar)
+        events = bus.drain_sync()
+        assert len(events) == 1
+        assert events[0].ticker == "000001.SZ"
 
     @pytest.mark.asyncio
     async def test_handler_receives_event(self):
@@ -95,6 +100,32 @@ class TestAsyncioEventBus:
         await asyncio.sleep(0.01)
 
         assert len(r2) == 1  # good handler still runs
+
+    def test_publish_sync_stores_events(self):
+        bus = AsyncioEventBus()
+        bar1 = Bar(ticker="A", close=10.0)
+        bar2 = Bar(ticker="B", close=20.0)
+        bus.publish_sync(bar1)
+        bus.publish_sync(bar2)
+        events = bus.drain_sync()
+        assert len(events) == 2
+        assert events[0].ticker == "A"
+        assert events[1].ticker == "B"
+        assert len(bus.drain_sync()) == 0
+
+    @pytest.mark.asyncio
+    async def test_flush_awaits_pending_tasks(self):
+        bus = AsyncioEventBus()
+        received = []
+
+        async def handler(e):
+            await asyncio.sleep(0.01)
+            received.append(e)
+
+        bus.subscribe("bar", handler)
+        bus.publish(Bar(ticker="000001.SZ", close=10.0))
+        await bus.flush()
+        assert len(received) == 1
 
 
 class TestCreateEventBus:

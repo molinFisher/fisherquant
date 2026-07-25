@@ -10,11 +10,31 @@ import bcrypt
 
 CREDENTIALS_DIR = str(Path.home() / ".fisher")
 CREDENTIALS_FILE = str(Path.home() / ".fisher" / "credentials.json")
+SECRET_KEY_FILE = str(Path.home() / ".fisher" / "secret_key")
 
-SECRET_KEY = os.environ.get(
-    "FISHER_JWT_SECRET",
-    "fisher-secret-" + secrets.token_hex(16),
-)
+
+def _get_or_create_secret_key() -> str:
+    env_key = os.environ.get("FISHER_JWT_SECRET")
+    if env_key:
+        return env_key
+    try:
+        os.makedirs(CREDENTIALS_DIR, exist_ok=True)
+        if os.path.exists(SECRET_KEY_FILE):
+            with open(SECRET_KEY_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except OSError:
+        pass
+    key = secrets.token_hex(32)
+    try:
+        os.makedirs(CREDENTIALS_DIR, exist_ok=True)
+        with open(SECRET_KEY_FILE, "w", encoding="utf-8") as f:
+            f.write(key)
+    except OSError:
+        pass
+    return key
+
+
+SECRET_KEY = _get_or_create_secret_key()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
@@ -41,9 +61,6 @@ def create_default_admin(password: str | None = None) -> None:
     hashed = hash_password(pw)
     with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
         json.dump({"username": "admin", "password_hash": hashed}, f, indent=2)
-
-    if password is None:
-        print(f"[auth] Default admin created. Password saved to {CREDENTIALS_FILE}")
 
 
 def authenticate(username: str, password: str) -> bool:
