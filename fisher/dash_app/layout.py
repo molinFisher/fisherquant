@@ -35,23 +35,35 @@ NAV_ITEMS = [
 
 def create_sidebar():
     nav_groups = []
-    for group in NAV_ITEMS:
+    for i, group in enumerate(NAV_ITEMS):
         items = []
         for item in group["items"]:
             items.append(
                 dbc.NavLink(
                     [html.Span(item["icon"], className="me-2"), item["label"]],
                     href=f"/{item['id']}",
-                    id=f"nav-{item['id']}",
+                    id={"type": "nav-item", "index": item["id"]},
                     className="nav-item",
                     active="exact",
                 )
             )
+        group_id = f"nav-group-{i}"
+        collapse_id = f"nav-group-collapse-{i}"
         nav_groups.append(
             html.Div(
                 [
-                    html.Div(group["group"], className="nav-group-title"),
-                    html.Div(items, className="nav-group-items"),
+                    html.Div(
+                        group["group"],
+                        className="nav-group-title",
+                        id=group_id,
+                        n_clicks=0,
+                        **{"data-bs-toggle": "collapse", "data-bs-target": f"#{collapse_id}"},
+                    ),
+                    dbc.Collapse(
+                        html.Div(items, className="nav-group-items"),
+                        id=collapse_id,
+                        is_open=True,
+                    ),
                 ],
                 className="nav-group",
             )
@@ -71,23 +83,33 @@ def create_sidebar():
             html.Div(
                 [
                     html.Hr(className="border-secondary"),
-                    html.Div(
-                        [
-                            dbc.Button(
-                                [html.Span("⚙️", className="me-1"), "设置"],
-                                id="sidebar-settings",
-                                color="link",
-                                size="sm",
-                                className="text-muted",
-                            ),
-                        ],
-                        className="sidebar-footer",
+                    dbc.Button(
+                        [html.Span("⚙️", className="me-1"), "设置"],
+                        href="/settings",
+                        color="link",
+                        size="sm",
+                        className="text-muted sidebar-settings-btn",
                     ),
                 ],
-                className="mt-auto",
+                className="sidebar-footer",
             ),
         ],
         className="sidebar",
+    )
+
+
+def create_mobile_header():
+    return html.Div(
+        [
+            dbc.Button(
+                html.Span("☰", className="hamburger-icon"),
+                id="sidebar-toggle-btn",
+                color="link",
+                className="sidebar-toggle d-md-none",
+            ),
+            html.Span("FisherQuant", className="mobile-brand d-md-none"),
+        ],
+        className="mobile-header",
     )
 
 
@@ -96,14 +118,32 @@ def create_layout():
         [
             dbc.Row(
                 [
-                    dbc.Col(create_sidebar(), width=2, className="sidebar-col g-0"),
-                    dbc.Col(html.Div(id="page-content"), width=10, className="content-col"),
+                    dbc.Col(
+                        [
+                            create_mobile_header(),
+                            html.Div(
+                                create_sidebar(),
+                                id="sidebar-wrapper",
+                                className="sidebar-wrapper",
+                            ),
+                        ],
+                        width=2,
+                        className="sidebar-col g-0",
+                        id="sidebar-container",
+                    ),
+                    dbc.Col(
+                        html.Div(id="page-content"),
+                        width=10,
+                        className="content-col",
+                        id="content-container",
+                    ),
                 ],
                 className="g-0 main-row",
             ),
             dcc.Location(id="url", refresh=False),
             dcc.Store(id="session-store", storage_type="session"),
             dcc.Store(id="backtest-results", storage_type="session"),
+            dcc.Store(id="sidebar-state", data={"open": True}),
             dcc.Interval(id="refresh-interval", interval=60000),
             html.Div(id="toast-container", className="toast-container"),
         ],
