@@ -118,3 +118,43 @@ class TestFactorEngineWithCache:
         result2 = engine.compute(["test_momentum"], df, ticker="000001.SZ", date="2025-01-01")
 
         assert result1["test_momentum"].to_list() == result2["test_momentum"].to_list()
+
+
+class TestMultiColumnFactors:
+    def setup_method(self):
+        FactorRegistry._factors.clear()
+
+    def test_macd_through_engine_multi_column(self):
+        from fisher.factor.technical import MACD
+        FactorRegistry.register(MACD())
+        engine = FactorEngine()
+        df = pl.DataFrame({"close": list(range(1, 101))})
+        result = engine.compute(["macd"], df, ticker="TEST", date="2025-01-01")
+        assert "macd_dif" in result.columns
+        assert "macd_dea" in result.columns
+        assert "macd_hist" in result.columns
+        assert "close" in result.columns
+
+    def test_bollinger_through_engine_multi_column(self):
+        from fisher.factor.technical import BollingerBands
+        FactorRegistry.register(BollingerBands())
+        engine = FactorEngine()
+        df = pl.DataFrame({"close": list(range(1, 41))})
+        result = engine.compute(["bollinger"], df, ticker="TEST", date="2025-01-01")
+        assert "bollinger_mid" in result.columns
+        assert "bollinger_upper" in result.columns
+        assert "bollinger_lower" in result.columns
+        assert "close" in result.columns
+
+    def test_macd_and_rsi_through_engine(self):
+        from fisher.factor.technical import MACD, RSI14
+        FactorRegistry.register(MACD())
+        FactorRegistry.register(RSI14())
+        engine = FactorEngine()
+        df = pl.DataFrame({"close": list(range(1, 101))})
+        result = engine.compute(["macd", "rsi_14"], df, ticker="TEST", date="2025-01-01")
+        assert "macd_dif" in result.columns
+        assert "macd_dea" in result.columns
+        assert "macd_hist" in result.columns
+        assert "rsi_14" in result.columns
+        assert "close" in result.columns

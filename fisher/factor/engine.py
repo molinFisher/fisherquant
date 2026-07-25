@@ -30,31 +30,71 @@ class FactorEngine:
         result = df.clone()
         for fname in factor_names:
             factor = FactorRegistry.get(fname)
-            computed = factor.compute(df)
-            col = computed[fname]
-            result = result.with_columns(col.alias(fname))
+            expected_cols = factor.output_columns
+
+            cached_series = None
             if self._db and ticker:
-                self._store_cache(ticker, fname, col, result)
+                cached_series = self._read_cache(ticker, expected_cols, result)
+
+            if cached_series is not None:
+                for s in cached_series:
+                    result = result.with_columns(s)
+                continue
+
+            orig_cols = set(result.columns)
+            computed = factor.compute(df)
+            added_cols = [c for c in computed.columns if c not in orig_cols]
+            for col_name in added_cols:
+                result = result.with_columns(computed[col_name].alias(col_name))
+            if self._db and ticker:
+                self._store_cache(ticker, {c: result[c] for c in added_cols}, result)
         return result
+
+    def _read_cache(
+        self,
+        ticker: str,
+        col_names: list[str],
+        df: pl.DataFrame,
+    ) -> list[pl.Series] | None:
+        trade_date_col = "trade_date" if "trade_date" in df.columns else None
+        series_list = []
+        for col_name in col_names:
+            cached = self._db.query_df(
+                "SELECT trade_date, value FROM factor_cache WHERE ticker=? AND factor_name=?",
+                [ticker, col_name],
+            )
+            if cached.is_empty():
+                return None
+            date_map = {}
+            for row in cached.iter_rows():
+                date_map[row[0]] = row[1]
+            values = []
+            for i in range(len(df)):
+                td = str(df[trade_date_col][i]) if trade_date_col else str(i)
+                if td not in date_map:
+                    return None
+                values.append(date_map[td])
+            series_list.append(pl.Series(col_name, values))
+        return series_list
 
     def _store_cache(
         self,
         ticker: str,
-        factor_name: str,
-        col: pl.Series,
+        columns: dict[str, pl.Series],
         df: pl.DataFrame,
     ) -> None:
-        rows = []
-        trade_date_col = "trade_date" if "trade_date" in df.columns else None
-        for i in range(len(col)):
-            val = col[i]
-            if val is None:
-                continue
-            trade_date = df[trade_date_col][i] if trade_date_col else str(i)
-            rows.append([ticker, str(trade_date), factor_name, float(val)])
-        if rows:
-            self._db.execute_many(
-                "INSERT OR REPLACE INTO factor_cache (ticker, trade_date, factor_name, value) "
-                "VALUES (?, ?, ?, ?)",
-                rows,
-            )
+        for factor_name, col in columns.items():
+            rows = []
+            trade_date_col = "trade_date" if "trade_date" in df.columns else None
+            for i in range(len(col)):
+                val = col[i]
+                if val is None:
+                    continue
+                trade_date = df[trade_date_col][i] if trade_date_col else str(i)
+                rows.append([ticker, str(trade_date), factor_name, float(val)])
+            if rows:
+                self._db.execute_many(
+                    "INSERT OR REPLACE INTO factor_cache (ticker, trade_date, factor_name, value) "
+                    "VALUES (?, ?, ?, ?)",
+                    rows,
+                )

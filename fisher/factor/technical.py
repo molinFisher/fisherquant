@@ -6,6 +6,10 @@ class MACD(Factor):
     name = "macd"
     category = "technical"
 
+    @property
+    def output_columns(self) -> list[str]:
+        return ["macd_dif", "macd_dea", "macd_hist"]
+
     def compute(self, df: pl.DataFrame) -> pl.DataFrame:
         if "close" not in df.columns:
             raise ValueError("DataFrame must have 'close' column")
@@ -42,6 +46,10 @@ class RSI14(Factor):
 class BollingerBands(Factor):
     name = "bollinger"
     category = "technical"
+
+    @property
+    def output_columns(self) -> list[str]:
+        return ["bollinger_mid", "bollinger_upper", "bollinger_lower"]
 
     def compute(self, df: pl.DataFrame) -> pl.DataFrame:
         if "close" not in df.columns:
