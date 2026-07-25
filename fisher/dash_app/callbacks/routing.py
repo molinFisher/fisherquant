@@ -34,3 +34,6 @@ def register_all_callbacks(app):
 
     from fisher.dash_app.callbacks.home_callbacks import register_home_callbacks
     register_home_callbacks(app)
+
+    from fisher.dash_app.callbacks.data_callbacks import register_data_callbacks
+    register_data_callbacks(app)
