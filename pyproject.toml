@@ -1,0 +1,42 @@
+[project]
+name = "fisherquant"
+version = "0.1.0"
+description = "Quantitative trading system for A-shares and HK Connect"
+requires-python = ">=3.11"
+dependencies = [
+    "polars",
+    "duckdb>=1.0",
+    "pyyaml",
+    "pydantic>=2.0",
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
+    "jinja2",
+    "python-multipart",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "apscheduler",
+    "akshare",
+    "httpx",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "mypy",
+    "ruff",
+]
+
+[project.scripts]
+fisher = "fisher.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
