@@ -152,6 +152,65 @@ def register_data_callbacks(app):
         return no_update
 
     @app.callback(
+        Output("minute-period-container", "style"),
+        Input("data-type-radio", "value"),
+    )
+    def toggle_minute_period(data_type):
+        if data_type == "minute":
+            return {"display": "block"}
+        return {"display": "none"}
+
+    @app.callback(
+        Output("financials-modal", "is_open"),
+        Output("financials-modal-body", "children"),
+        Input("query-financials-btn", "n_clicks"),
+        Input("close-financials-modal", "n_clicks"),
+        State("financials-symbol-input", "value"),
+        State("financials-modal", "is_open"),
+        prevent_initial_call=True,
+    )
+    def toggle_financials_modal(query_clicks, close_clicks, symbol, is_open):
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return False, ""
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+        if trigger_id == "close-financials-modal":
+            return False, ""
+
+        if trigger_id == "query-financials-btn":
+            if not symbol or not symbol.strip():
+                return True, html.Div("请输入标的代码", className="text-danger")
+            try:
+                import akshare as ak
+                get_global_limiter().acquire()
+                df = ak.stock_financial_abstract(symbol=symbol.strip())
+                if df is None or len(df) == 0:
+                    return True, html.Div("未查询到财务数据", className="text-warning")
+                columns = [{"name": c, "id": c} for c in df.columns]
+                data = df.to_dict("records")
+                return True, dash_table.DataTable(
+                    columns=columns,
+                    data=data,
+                    page_size=15,
+                    style_table={"overflowX": "auto"},
+                    style_cell={"padding": "6px", "fontSize": "12px"},
+                    style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
+                )
+            except Exception as e:
+                return True, html.Div(f"查询失败: {str(e)}", className="text-danger")
+
+        return False, ""
+
+    @app.callback(
+        Output("financials-modal", "is_open", allow_duplicate=True),
+        Input("close-financials-modal", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def close_modal(n):
+        return False
+
+    @app.callback(
         Output("cached-table-container", "children"),
         Input("data-center-tabs", "active_tab"),
         Input("cache-market-filter", "value"),

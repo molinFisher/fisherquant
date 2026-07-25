@@ -20,6 +20,7 @@ def create_data_center_layout():
             dcc.Store(id="fetch-progress-store"),
             dcc.Store(id="toast-trigger"),
             html.Div(id="data-center-content"),
+            _create_financials_modal(),
         ]
     )
 
@@ -69,6 +70,24 @@ def _create_query_tab():
                                         ],
                                         value="daily",
                                     ),
+                                    html.Div(
+                                        id="minute-period-container",
+                                        children=[
+                                            dbc.Label("分钟周期", className="mt-2"),
+                                            dcc.Dropdown(
+                                                id="minute-period-selector",
+                                                options=[
+                                                    {"label": "1分钟", "value": "1min"},
+                                                    {"label": "5分钟", "value": "5min"},
+                                                    {"label": "15分钟", "value": "15min"},
+                                                    {"label": "30分钟", "value": "30min"},
+                                                    {"label": "60分钟", "value": "60min"},
+                                                ],
+                                                value="5min",
+                                            ),
+                                        ],
+                                        style={"display": "none"},
+                                    ),
                                     dbc.Label("批量输入", className="mt-2"),
                                     dcc.Textarea(
                                         id="batch-symbols-input",
@@ -103,11 +122,46 @@ def _create_query_tab():
                             dbc.CardHeader("获取列表"),
                             dbc.CardBody(id="fetch-list", children="请先搜索并选择标的"),
                         ]
-                    )
+                    ),
+                    html.Br(),
+                    dbc.Card(
+                        [
+                            dbc.CardHeader("财务数据查询"),
+                            dbc.CardBody(
+                                [
+                                    dbc.Input(
+                                        id="financials-symbol-input",
+                                        placeholder="输入标的代码...",
+                                        className="mb-2",
+                                    ),
+                                    dbc.Button(
+                                        "查询财务数据",
+                                        id="query-financials-btn",
+                                        color="info",
+                                        className="w-100",
+                                    ),
+                                ]
+                            ),
+                        ]
+                    ),
                 ],
                 width=6,
             ),
-        ]
+        ],
+    )
+
+
+def _create_financials_modal():
+    return dbc.Modal(
+        [
+            dbc.ModalHeader(dbc.ModalTitle("财务数据")),
+            dbc.ModalBody(id="financials-modal-body", children="加载中..."),
+            dbc.ModalFooter(
+                dbc.Button("关闭", id="close-financials-modal", className="ms-auto")
+            ),
+        ],
+        id="financials-modal",
+        size="lg",
     )
 
 
