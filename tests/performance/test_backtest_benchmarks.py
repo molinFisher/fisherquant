@@ -5,6 +5,15 @@ import polars as pl
 from tests.factories import DataFactory
 
 
+def _prepare_bars_df(df: pl.DataFrame, ticker: str = "TEST.SZ") -> pl.DataFrame:
+    return df.with_columns([
+        pl.lit(ticker).alias("ticker"),
+        pl.lit("a_share").alias("market"),
+        pl.col("date").alias("trade_date"),
+        (pl.col("volume").cast(pl.Float64) * pl.col("close")).alias("amount"),
+    ]).select(["ticker", "trade_date", "open", "high", "low", "close", "volume", "amount", "market"])
+
+
 class TestDataGenerationPerformance:
     def test_generate_1y_data(self):
         factory = DataFactory(seed=42)
@@ -28,6 +37,7 @@ class TestBacktestPerformance:
     def test_single_strategy_1y(self):
         factory = DataFactory(seed=42)
         df = factory.generate_ohlcv("TEST.SZ", days=252, trend="random")
+        df = _prepare_bars_df(df)
 
         start = time.perf_counter()
         result = asyncio.run(_run_backtest_single(df))
@@ -40,7 +50,9 @@ class TestBacktestPerformance:
         factory = DataFactory(seed=42)
         dfs = []
         for i in range(10):
-            dfs.append(factory.generate_ohlcv(f"TEST{i:03d}.SZ", days=252, trend="random"))
+            df = factory.generate_ohlcv(f"TEST{i:03d}.SZ", days=252, trend="random")
+            df = _prepare_bars_df(df, f"TEST{i:03d}.SZ")
+            dfs.append(df)
         combined = pl.concat(dfs).sort(["trade_date", "ticker"])
 
         start = time.perf_counter()
@@ -53,6 +65,7 @@ class TestBacktestPerformance:
     def test_walk_forward_3y(self):
         factory = DataFactory(seed=42)
         df = factory.generate_ohlcv("TEST.SZ", days=756, trend="random")
+        df = _prepare_bars_df(df)
 
         start = time.perf_counter()
         result = asyncio.run(_run_backtest_single(df))
@@ -64,6 +77,7 @@ class TestBacktestPerformance:
     def test_parameter_sensitivity(self):
         factory = DataFactory(seed=42)
         df = factory.generate_ohlcv("TEST.SZ", days=252, trend="random")
+        df = _prepare_bars_df(df)
 
         fast_params = list(range(5, 55, 10))
         slow_params = list(range(20, 70, 10))
