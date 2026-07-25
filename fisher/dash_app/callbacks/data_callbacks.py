@@ -1,8 +1,9 @@
 import asyncio
+import io
 import threading
-from dash import Input, Output, State, callback, no_update
+import dash
+from dash import Input, Output, State, callback, no_update, dcc, html, dash_table
 import dash_bootstrap_components as dbc
-from dash import html, dcc
 import polars as pl
 from datetime import date, timedelta
 
@@ -209,6 +210,117 @@ def register_data_callbacks(app):
     )
     def close_modal(n):
         return False
+
+    @app.callback(
+        Output("next-refresh-time", "children"),
+        Input("auto-refresh-toggle", "value"),
+        Input("auto-refresh-cron", "value"),
+    )
+    def update_next_refresh_time(enabled, cron_expr):
+        if not enabled:
+            return ""
+        if not cron_expr:
+            return "请输入cron表达式"
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+            from datetime import datetime
+            trigger = CronTrigger.from_crontab(cron_expr)
+            now = datetime.now()
+            next_run = trigger.get_next_fire_time(None, now)
+            if next_run:
+                return f"下次刷新: {next_run.strftime('%Y-%m-%d %H:%M:%S')}"
+            return "cron表达式无效"
+        except Exception:
+            return "cron表达式格式错误"
+
+    @app.callback(
+        Output("download-data", "data"),
+        Input("export-data-btn", "n_clicks"),
+        State("export-format-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def export_data(n_clicks, fmt):
+        db = _get_db()
+        try:
+            df = db.query_df("SELECT * FROM bars_daily ORDER BY ticker, trade_date")
+        except Exception:
+            return None
+
+        if len(df) == 0:
+            return None
+
+        import io
+        if fmt == "csv":
+            buf = io.StringIO()
+            df.write_csv(buf)
+            buf.seek(0)
+            return dcc.send_string(buf.getvalue(), filename="fisherquant_data.csv")
+        elif fmt == "xlsx":
+            buf = io.BytesIO()
+            df.write_excel(buf)
+            buf.seek(0)
+            return dcc.send_bytes(buf.getvalue(), filename="fisherquant_data.xlsx")
+        elif fmt == "parquet":
+            buf = io.BytesIO()
+            df.write_parquet(buf)
+            buf.seek(0)
+            return dcc.send_bytes(buf.getvalue(), filename="fisherquant_data.parquet")
+        return None
+
+    @app.callback(
+        Output("adj-factor-result", "children"),
+        Input("fetch-adj-factor-btn", "n_clicks"),
+        State("adj-factor-symbol", "value"),
+        prevent_initial_call=True,
+    )
+    def fetch_adj_factor(n_clicks, symbol):
+        if not symbol or not symbol.strip():
+            return html.Div("请输入标的代码", className="text-warning")
+
+        db = _get_db()
+        try:
+            df = db.query_df(
+                "SELECT trade_date, adj_factor FROM bars_daily WHERE ticker=? ORDER BY trade_date",
+                [symbol.strip()],
+            )
+        except Exception:
+            return html.Div("查询失败", className="text-danger")
+
+        if len(df) == 0:
+            return html.Div("未找到该标的的数据", className="text-warning")
+
+        has_adj = (df["adj_factor"] != 1.0).any()
+        badge = dbc.Badge("已复权", color="success", className="ms-2") if has_adj else dbc.Badge("未复权", color="secondary", className="ms-2")
+
+        columns = [
+            {"name": "日期", "id": "trade_date"},
+            {"name": "复权因子", "id": "adj_factor"},
+        ]
+        data = df.to_dicts()
+        return html.Div([
+            html.Div([html.Strong(f"标的: {symbol.strip()}"), badge], className="mb-2"),
+            dash_table.DataTable(
+                columns=columns,
+                data=data[:20],
+                page_size=10,
+                style_table={"overflowX": "auto"},
+                style_cell={"padding": "4px", "fontSize": "12px"},
+                style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
+            ),
+            html.Small(f"共 {len(df)} 条记录" if len(df) > 20 else "", className="text-muted"),
+        ])
+
+    @app.callback(
+        Output("cached-table-container", "children", allow_duplicate=True),
+        Input("cache-refresh-btn", "n_clicks"),
+        State("data-center-tabs", "active_tab"),
+        prevent_initial_call=True,
+    )
+    def force_refresh_cached(n, active_tab):
+        if active_tab != "tab-cached":
+            return no_update
+        db = _get_db()
+        return _build_cached_table(db)
 
     @app.callback(
         Output("cached-table-container", "children"),
