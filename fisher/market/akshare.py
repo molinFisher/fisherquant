@@ -5,6 +5,7 @@ import traceback
 import akshare as ak
 from .gateway import MarketGateway
 from .model import Bar
+from .rate_limiter import get_global_limiter, retry_with_backoff
 from ..config.schemas import MarketConfig
 
 logger = logging.getLogger(__name__)
@@ -32,19 +33,24 @@ class AkshareAdapter(MarketGateway):
 
     async def get_bars(self, ticker: str, start: str, end: str, frequency: str = "1d"):
         try:
-            code, market = self._parse_ticker(ticker)
-            if frequency == "1d":
-                df = await asyncio.to_thread(
-                    ak.stock_zh_a_hist,
-                    symbol=code, period="daily",
-                    start_date=start, end_date=end, adjust="qfq",
-                )
-                return self._df_to_bars(df, ticker)
-            else:
-                logger.warning("Minute bars not supported by akshare free tier")
-                return []
+            return await self._fetch_bars(ticker, start, end, frequency)
         except Exception:
             logger.error("Failed to fetch bars for %s:\n%s", ticker, traceback.format_exc())
+            return []
+
+    @retry_with_backoff(max_retries=3, base_delay=1.0)
+    async def _fetch_bars(self, ticker: str, start: str, end: str, frequency: str = "1d"):
+        get_global_limiter().acquire()
+        code, market = self._parse_ticker(ticker)
+        if frequency == "1d":
+            df = await asyncio.to_thread(
+                ak.stock_zh_a_hist,
+                symbol=code, period="daily",
+                start_date=start, end_date=end, adjust="qfq",
+            )
+            return self._df_to_bars(df, ticker)
+        else:
+            logger.warning("Minute bars not supported by akshare free tier")
             return []
 
     def _parse_ticker(self, ticker: str) -> tuple[str, str]:
@@ -53,10 +59,28 @@ class AkshareAdapter(MarketGateway):
             return parts[0], parts[1].lower()
         return ticker, ""
 
+    _NORMALIZE_PREFIX_MAP: dict[str, str] = {
+        "000": "SZ", "001": "SZ", "002": "SZ", "003": "SZ",
+        "600": "SH", "601": "SH", "603": "SH", "605": "SH",
+        "688": "SH",
+        "300": "SZ", "301": "SZ",
+        "200": "SZ",  # B-share SZ
+        "900": "SH",  # B-share SH
+        "400": "BJ", "430": "BJ",
+        "830": "BJ", "831": "BJ", "832": "BJ", "833": "BJ", "834": "BJ",
+        "835": "BJ", "836": "BJ", "837": "BJ", "838": "BJ", "839": "BJ",
+        "870": "BJ", "871": "BJ", "872": "BJ", "873": "BJ",
+    }
+
     def _normalize_ticker(self, code: str, market: str) -> str:
         if market == "a_share":
-            if code.startswith(("6", "5", "9")):
+            for prefix, exchange in self._NORMALIZE_PREFIX_MAP.items():
+                if code.startswith(prefix):
+                    return f"{code}.{exchange}"
+            if code.startswith("5"):
                 return f"{code}.SH"
+            if code.startswith(("0", "2", "3", "4", "8")):
+                return f"{code}.SZ"
             return f"{code}.SZ"
         elif market == "hk_connect":
             code_fixed = code.zfill(5)
