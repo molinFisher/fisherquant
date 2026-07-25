@@ -1,0 +1,11 @@
+# configs/market.yaml
+source: akshare
+
+refresh:
+  quote: 3
+  bars_daily: "16:30"
+  bars_minute: null
+
+rate_limit:
+  max_per_second: 2
+  on_limit: sleep_and_retry

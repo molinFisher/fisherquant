@@ -1,0 +1,13 @@
+# configs/strategy.yaml
+universe:
+  tickers: []
+  exclude_st: true
+  exclude_new: true
+
+strategies: []
+
+portfolio:
+  method: equal_weight
+  rebalance: weekly
+  max_positions: 20
+  conflict_mode: weighted_merge

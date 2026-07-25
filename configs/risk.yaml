@@ -1,0 +1,19 @@
+# configs/risk.yaml
+pre_trade:
+  - rule: MaxPosition
+    params:
+      max_pct: 0.2
+  - rule: DailyLossLimit
+    params:
+      max_loss_pct: 0.05
+  - rule: PriceLimit
+  - rule: SectorLimit
+    params:
+      max_pct: 0.3
+
+realtime:
+  var_confidence: 0.99
+  max_drawdown: 0.15
+  beta_limit: 1.5
+
+blacklist: []

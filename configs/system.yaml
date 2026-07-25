@@ -1,0 +1,16 @@
+# configs/system.yaml
+mode: paper
+
+event:
+  backend: asyncio
+
+logging:
+  level: INFO
+  dir: logs/
+  rotation: daily
+  retention: 90d
+  structured: true
+  modules:
+    strategy: DEBUG
+    risk: INFO
+    market: WARNING

@@ -1,0 +1,29 @@
+# configs/fees.yaml
+assets:
+  a_share:
+    commission_rate: 0.00025
+    min_commission: 5.0
+    stamp_duty: 0.0005
+    stamp_duty_side: sell
+    transfer_fee: 0.00001
+    regulatory_fee: 0.0000687
+
+  etf:
+    commission_rate: 0.0001
+    min_commission: 1.0
+    stamp_duty: 0.0
+    stamp_duty_side: none
+
+  convertible_bond:
+    commission_rate: 0.00005
+    min_commission: 1.0
+    stamp_duty: 0.0
+    stamp_duty_side: none
+
+  hk_connect:
+    commission_rate: 0.00025
+    min_commission: 100.0
+    stamp_duty: 0.001
+    stamp_duty_side: both
+    regulatory_fee: 0.0000835
+    settlement_fee: 0.00002

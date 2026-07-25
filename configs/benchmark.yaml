@@ -1,0 +1,5 @@
+# configs/benchmark.yaml
+benchmarks:
+  - name: CSI300
+    ticker: "000300.SH"
+    weight: 1.0

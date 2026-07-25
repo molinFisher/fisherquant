@@ -1,0 +1,7 @@
+# configs/alert.yaml
+channels:
+  console:
+    type: console
+    events: [RiskAlert, OrderFilled, OrderRejected, SystemError]
+    level: WARN
+    throttle: 60
