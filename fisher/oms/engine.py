@@ -7,7 +7,17 @@ class OMSEngine:
         self._orders: dict[str, Order] = {}
         self._condition_queue: list[Order] = []
 
+    VALID_CONDITION_TYPES = {"stop_loss", "take_profit"}
+
     def submit(self, order: Order) -> None:
+        if order.condition_type is not None:
+            if order.condition_type not in self.VALID_CONDITION_TYPES:
+                raise ValueError(
+                    f"Invalid condition_type '{order.condition_type}'. "
+                    f"Must be one of {self.VALID_CONDITION_TYPES}"
+                )
+            if order.condition_price is None:
+                raise ValueError("condition_price must be set when condition_type is provided")
         if order.condition_price is not None and order.condition_type is not None:
             self._condition_queue.append(order)
             self._orders[order.order_id] = order

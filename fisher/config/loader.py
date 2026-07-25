@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 from pathlib import Path
@@ -26,7 +27,7 @@ def _resolve_env_vars(obj):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_resolve_env_vars(v) for v in obj]
-    return obj
+    return copy.deepcopy(obj)
 
 
 _CONFIG_FILES = [
@@ -50,7 +51,7 @@ class ConfigLoader:
                         loaded = yaml.safe_load(f)
                     if loaded:
                         raw[fname.replace(".yaml", "")] = loaded
-                except yaml.YAMLError as e:
+                except (yaml.YAMLError, OSError) as e:
                     raise ConfigLoadError(f"Invalid YAML in {fname}: {e}")
 
         raw = _resolve_env_vars(raw)

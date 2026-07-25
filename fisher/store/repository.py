@@ -5,17 +5,16 @@ from .engine import DuckDBEngine
 class BarRepo:
     @staticmethod
     def save_bars_daily(engine: DuckDBEngine, bars: pl.DataFrame) -> None:
-        existing = bars.to_dicts()
         engine.execute_many(
             """INSERT OR REPLACE INTO bars_daily
                (ticker, trade_date, open, high, low, close, volume, amount, market)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 [
-                    r["ticker"], r["trade_date"], r["open"], r["high"],
-                    r["low"], r["close"], r["volume"], r["amount"], r["market"],
+                    r[0], r[1], r[2], r[3],
+                    r[4], r[5], r[6], r[7], r[8],
                 ]
-                for r in existing
+                for r in bars.iter_rows()
             ],
         )
 
@@ -43,6 +42,11 @@ class PositionRepo:
     ) -> None:
         if not positions:
             return
+        required = {"ticker", "quantity", "avg_cost", "close_price", "market_value"}
+        for p in positions:
+            missing = required - set(p.keys())
+            if missing:
+                raise KeyError(f"Missing required keys in position snapshot: {missing}")
         engine.execute_many(
             """INSERT OR REPLACE INTO position_snapshots
                (date, ticker, market, quantity, avg_cost, close_price, market_value)

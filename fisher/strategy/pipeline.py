@@ -29,7 +29,7 @@ def parse_pipeline_yaml(path: str | Path) -> PipelineConfig:
     if not path.exists():
         raise FileNotFoundError(f"Pipeline YAML not found: {path}")
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     if not raw or "pipeline" not in raw:
@@ -55,6 +55,7 @@ def parse_pipeline_yaml(path: str | Path) -> PipelineConfig:
 
 
 def build_strategy_from_pipeline(config: PipelineConfig):
+    # Runtime import to avoid circular dependency (pipeline -> strategy.builtin -> pipeline)
     from ..strategy.builtin.alpha_model import AlphaModelStrategy
 
     return AlphaModelStrategy({

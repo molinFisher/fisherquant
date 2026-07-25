@@ -13,7 +13,7 @@ ORDER_STATUS_TRANSITIONS: dict[OrderStatus, list[OrderStatus]] = {
     OrderStatus.PENDING: [
         OrderStatus.SUBMITTED,
         OrderStatus.ACKED,
-        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.PARTIALLY_FILLED,  # kept as-is for consistency with event/types.py OrderStatus enum
         OrderStatus.REJECTED,
         OrderStatus.CANCELLED,
     ],
@@ -95,6 +95,10 @@ def create_order(
     condition_price: float | None = None,
     condition_type: str | None = None,
 ) -> Order:
+    if quantity <= 0:
+        raise ValueError(f"Quantity must be positive, got {quantity}")
+    if price < 0:
+        raise ValueError(f"Price must be non-negative, got {price}")
     return Order(
         order_id=_next_order_id(),
         ticker=ticker,

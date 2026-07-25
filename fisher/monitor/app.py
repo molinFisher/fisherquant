@@ -53,7 +53,7 @@ async def _require_auth(user: str | None = Depends(_verify_token)) -> str:
     return user
 
 
-def create_app() -> FastAPI:
+def create_app(paper_engine=None, position_service=None, risk_engine=None) -> FastAPI:
     create_default_admin()
 
     @asynccontextmanager
@@ -74,6 +74,12 @@ def create_app() -> FastAPI:
             return {"access_token": token, "token_type": "bearer"}
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    @app.get("/logout")
+    async def logout(request: Request):
+        response = _get_template_response(request, "login.html")
+        response.delete_cookie("access_token")
+        return response
+
     @app.get("/dashboard")
     async def dashboard(request: Request, user: str = Depends(_require_auth)):
         return _get_template_response(request, "dashboard.html")
@@ -84,18 +90,30 @@ def create_app() -> FastAPI:
 
     @app.get("/api/overview")
     async def api_overview(user: str = Depends(_require_auth)):
+        if paper_engine is not None:
+            acct = paper_engine.get_account()
+            return {"nav": acct.get("capital", 0.0), "capital": acct.get("capital", 0.0),
+                    "available": acct.get("available", 0.0), "user": user}
         return {"nav": 1000000.0, "capital": 1000000.0, "available": 1000000.0, "user": user}
 
     @app.get("/api/positions")
     async def api_positions(user: str = Depends(_require_auth)):
+        if position_service is not None:
+            positions = position_service.snapshot()
+            return {"positions": positions}
         return {"positions": []}
 
     @app.get("/api/orders")
     async def api_orders(user: str = Depends(_require_auth)):
+        if paper_engine is not None:
+            orders = paper_engine._oms.get_all_orders()
+            return [{"order_id": o.order_id, "ticker": o.ticker, "status": o.status.value} for o in orders]
         return []
 
     @app.get("/api/risk")
     async def api_risk(user: str = Depends(_require_auth)):
+        if risk_engine is not None:
+            return {"status": "ok", "rules": [r.rule for r in risk_engine._pre_trade_rules]}
         return {"status": "ok", "rules": []}
 
     app.include_router(ws_router)

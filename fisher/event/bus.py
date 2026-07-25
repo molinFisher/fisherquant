@@ -25,15 +25,20 @@ class EventBus(ABC):
 class AsyncioEventBus(EventBus):
     def __init__(self):
         self._handlers: dict[str, list[Handler]] = defaultdict(list)
+        self._handler_set: dict[str, set[int]] = defaultdict(set)
         self._tasks: set[asyncio.Task] = set()
         self._sync_queue: deque = deque()
 
     def subscribe(self, event_type: str, handler: Handler) -> None:
-        if handler not in self._handlers[event_type]:
+        hid = id(handler)
+        if hid not in self._handler_set[event_type]:
+            self._handler_set[event_type].add(hid)
             self._handlers[event_type].append(handler)
 
     def unsubscribe(self, event_type: str, handler: Handler) -> None:
-        if handler in self._handlers[event_type]:
+        hid = id(handler)
+        if hid in self._handler_set[event_type]:
+            self._handler_set[event_type].discard(hid)
             self._handlers[event_type].remove(handler)
 
     def publish(self, event: Event) -> None:

@@ -43,11 +43,12 @@ class PositionService:
                     f"only {pos['quantity'] + order.filled_qty} shares held"
                 )
             if pos["quantity"] <= 0:
+                # Remove position entry when holdings reach zero
                 self._positions.pop(ticker)
                 self._t1_pending.pop(ticker, None)
                 return
 
-        if order.market == "a_share" and is_buy:
+        if self._market_t_plus(order.market) > 0 and is_buy:
             if ticker not in self._t1_pending:
                 self._t1_pending[ticker] = []
             self._t1_pending[ticker].append((order.filled_qty, "buy"))
@@ -118,12 +119,19 @@ class PositionService:
         total = pos["quantity"]
         frozen = pos["frozen"]
 
-        if pos["market"] == "a_share":
+        if pos["market"] == "a_share" and self._market_t_plus(pos["market"]) > 0:
             t1_blocked = sum(qty for qty, _ in self._t1_pending.get(ticker, []))
         else:
             t1_blocked = 0
 
         pos["available"] = max(0, total - frozen - t1_blocked)
+
+    def _market_t_plus(self, market: str) -> int:
+        if market == "a_share":
+            return 1
+        if market == "hk_connect":
+            return 0
+        return 0
 
     def _get_position_or_raise(self, ticker: str) -> dict:
         pos = self._positions.get(ticker)

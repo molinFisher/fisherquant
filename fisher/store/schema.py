@@ -40,6 +40,7 @@ _TABLES = [
     """,
     """
     CREATE TABLE IF NOT EXISTS snapshots (
+        id BIGINT PRIMARY KEY,
         ticker VARCHAR NOT NULL,
         ts TIMESTAMP NOT NULL,
         last_price DOUBLE,
@@ -49,8 +50,7 @@ _TABLES = [
         volume BIGINT,
         amount DOUBLE,
         pre_close DOUBLE,
-        market VARCHAR DEFAULT 'a_share',
-        PRIMARY KEY (ticker, ts)
+        market VARCHAR DEFAULT 'a_share'
     )
     """,
     """

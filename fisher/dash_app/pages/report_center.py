@@ -69,7 +69,7 @@ def _create_report_preview_panel():
                     html.Iframe(
                         id="report-preview-iframe",
                         style={"width": "100%", "height": "600px", "border": "1px solid #dee2e6", "borderRadius": "4px"},
-                        srcDoc="<p>请配置并点击"预览"</p>",
+                        srcDoc='<p>请配置并点击"预览"</p>',
                     ),
                 ]
             ),

@@ -2,6 +2,7 @@
 channels:
   console:
     type: console
-    events: [risk_alert, order_filled, order_rejected, system_error]
+    events: [risk_alert, order_filled, order_rejected]
+    # NOTE: system_error removed - no publisher emits this event yet
     level: WARN
     throttle: 60

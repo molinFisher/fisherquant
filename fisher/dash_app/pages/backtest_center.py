@@ -118,7 +118,7 @@ def _create_multi_results_panel():
     return dbc.Card(
         [
             dbc.CardHeader("对比结果"),
-            dbc.CardBody([html.Div(id="bt-multi-results", children="选择策略后点击"开始对比"")]),
+            dbc.CardBody([html.Div(id="bt-multi-results", children='选择策略后点击"开始对比"')]),
         ]
     )
 
@@ -157,7 +157,7 @@ def _create_wf_results_panel():
     return dbc.Card(
         [
             dbc.CardHeader("滚动优化结果"),
-            dbc.CardBody([html.Div(id="bt-wf-results", children="配置参数后点击"开始分析"")]),
+            dbc.CardBody([html.Div(id="bt-wf-results", children='配置参数后点击"开始分析"')]),
         ]
     )
 
@@ -212,7 +212,7 @@ def _create_sens_results_panel():
     return dbc.Card(
         [
             dbc.CardHeader("敏感性分析结果"),
-            dbc.CardBody([html.Div(id="bt-sens-results", children="配置参数后点击"开始分析"")]),
+            dbc.CardBody([html.Div(id="bt-sens-results", children='配置参数后点击"开始分析"')]),
         ]
     )
 
@@ -272,7 +272,7 @@ def _create_regime_results_panel():
     return dbc.Card(
         [
             dbc.CardHeader("市场环境分析结果"),
-            dbc.CardBody([html.Div(id="bt-regime-results", children="配置参数后点击"开始分析"")]),
+            dbc.CardBody([html.Div(id="bt-regime-results", children='配置参数后点击"开始分析"')]),
         ]
     )
 
@@ -402,7 +402,7 @@ def _create_results_panel():
             dbc.CardHeader("回测结果"),
             dbc.CardBody(
                 [
-                    html.Div(id="bt-summary-container", children="配置参数后点击"开始回测""),
+                    html.Div(id="bt-summary-container", children='配置参数后点击"开始回测"'),
                     html.Div(id="bt-equity-thumbnail", className="mt-3"),
                     html.Div(id="bt-results-link", className="mt-2"),
                 ]

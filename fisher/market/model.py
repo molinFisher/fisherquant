@@ -1,5 +1,11 @@
 # fisher/market/model.py
-from dataclasses import dataclass, field
+"""Core market data models (plain dataclasses).
+
+These model classes represent raw market data structures used by the
+gateway layer. For event-system versions of Bar and MarketSnapshot,
+see fisher.event.types which extend the base Event dataclass.
+"""
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -63,7 +69,7 @@ class MarketSnapshot:
     pre_close: float = 0.0
     volume: int = 0
     amount: float = 0.0
-    timestamp: float = field(default_factory=lambda: 0.0)
+    timestamp: float = 0.0
 
     @property
     def change_pct(self) -> float:

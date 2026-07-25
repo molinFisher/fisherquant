@@ -21,12 +21,7 @@ class FeeCalculator:
         if fee_cfg is None:
             raise ValueError(f"Unknown market: {market}")
 
-        commission = max(
-            trade_value * fee_cfg.commission_rate,
-            0.0 if trade_value == 0 else fee_cfg.min_commission if fee_cfg.min_commission > 0 else 0.0,
-        )
-        if trade_value == 0:
-            commission = 0.0
+        commission = max(trade_value * fee_cfg.commission_rate, fee_cfg.min_commission) if trade_value > 0 else 0.0
 
         stamp_duty = 0.0
         side_check = fee_cfg.stamp_duty_side

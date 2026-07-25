@@ -2,7 +2,12 @@ import math
 
 
 def equal_weight(merged: dict, max_positions: int) -> dict:
-    selected = dict(list(merged.items())[:max_positions])
+    sorted_items = sorted(
+        merged.items(),
+        key=lambda item: item[1].get("confidence", 0.0) if isinstance(item[1], dict) else 0.0,
+        reverse=True,
+    )
+    selected = dict(sorted_items[:max_positions])
     weight = 1.0 / max(len(selected), 1)
     return {t: weight for t in selected}
 

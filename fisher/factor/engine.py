@@ -29,7 +29,10 @@ class FactorEngine:
     ) -> pl.DataFrame:
         result = df.clone()
         for fname in factor_names:
-            factor = FactorRegistry.get(fname)
+            try:
+                factor = FactorRegistry.get(fname)
+            except KeyError:
+                raise KeyError(f"Factor '{fname}' not found in registry")
             expected_cols = factor.output_columns
 
             cached_series = None

@@ -107,6 +107,10 @@ class PaperEngine(BrokerAdapter):
             self._available -= trade_value + commission if order.side.value == "buy" else 0
             self._available += trade_value - commission if order.side.value == "sell" else 0
 
+            self._capital = self._available + sum(
+                p["market_value"] for p in self._positions.values()
+            )
+
             filled_orders.append(order)
 
         return filled_orders

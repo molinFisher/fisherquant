@@ -54,6 +54,9 @@ class DailyLossLimitRule(PreTradeRule):
         capital: float,
         market_price: float = 0.0,
     ) -> tuple[bool, str]:
+        # abs() is used here to compute loss magnitude percentage from
+        # the cumulative PnL which may be negative; the sign check below
+        # (self._cumulative_pnl < 0) ensures we only trigger on actual losses
         loss_pct = abs(self._cumulative_pnl) / capital if capital > 0 else 0.0
         if self._cumulative_pnl < 0 and loss_pct >= self._max_loss_pct:
             return False, f"DailyLossLimit: daily loss {loss_pct:.2%} >= {self._max_loss_pct:.2%}"

@@ -8,7 +8,7 @@ def create_visual_dashboard_layout():
         [
             html.H3("可视化看板", className="mb-3"),
             dcc.Location(id="viz-url", refresh=False),
-            html.Div(id="viz-loading-container", children="请输入回测ID或在回测中心点击"查看完整看板""),
+            html.Div(id="viz-loading-container", children='请输入回测ID或在回测中心点击"查看完整看板"'),
             dcc.Store(id="viz-backtest-data", data=None),
             dcc.Store(id="viz-backtest-id", data=None),
             _create_viz_content_container(),

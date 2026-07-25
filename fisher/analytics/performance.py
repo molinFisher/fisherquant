@@ -1,4 +1,5 @@
 import math
+from .stats import compute_beta
 
 
 def daily_returns(nav: list[float]) -> list[float]:
@@ -41,10 +42,12 @@ def sortino_ratio(nav: list[float], risk_free_rate: float = 0.02) -> float:
         return 0.0
     mean_ret = sum(rets) / len(rets)
     excess = mean_ret - risk_free_rate / 252
-    downside = [min(r - risk_free_rate / 252, 0) for r in rets]
-    downside_var = sum(d ** 2 for d in downside) / len(downside)
+    downside_only = [min(r - risk_free_rate / 252, 0) for r in rets if r < risk_free_rate / 252]
+    if len(downside_only) == 0:
+        return float("inf") if excess > 0 else 0.0
+    downside_var = sum(d ** 2 for d in downside_only) / len(downside_only)
     if downside_var == 0:
-        return 99.0 if excess > 0 else 0.0
+        return float("inf") if excess > 0 else 0.0
     return (excess / math.sqrt(downside_var)) * math.sqrt(252)
 
 
@@ -79,22 +82,7 @@ def profit_factor(trades: list[dict]) -> float:
 
 
 def beta(nav: list[float], benchmark: list[float]) -> float:
-    rets_p = daily_returns(nav)
-    rets_b = daily_returns(benchmark)
-    n = min(len(rets_p), len(rets_b))
-    if n < 2:
-        return 0.0
-
-    p = rets_p[-n:]
-    b = rets_b[-n:]
-    mean_p = sum(p) / n
-    mean_b = sum(b) / n
-
-    cov = sum((p[i] - mean_p) * (b[i] - mean_b) for i in range(n)) / n
-    var_b = sum((x - mean_b) ** 2 for x in b) / n
-    if var_b == 0:
-        return 0.0
-    return cov / var_b
+    return compute_beta(daily_returns(nav), daily_returns(benchmark))
 
 
 def alpha(nav: list[float], benchmark: list[float], risk_free_rate: float = 0.02) -> float:

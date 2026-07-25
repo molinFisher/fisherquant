@@ -8,8 +8,8 @@ class MomentumStrategy(Strategy):
 
     def __init__(self, params: dict | None = None):
         super().__init__(params)
-        self._fast_window = self.params.get("fast_window", 5)
-        self._slow_window = self.params.get("slow_window", 20)
+        self._fast_window = max(self.params.get("fast_window", 5), 1)
+        self._slow_window = max(self.params.get("slow_window", 20), 2)
         self._prices: dict[str, deque[float]] = {}
 
     async def on_bar(self, bar: Bar):

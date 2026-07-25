@@ -6,7 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError
 import bcrypt
+# For production use, consider replacing bcrypt with passlib:
+# from passlib.hash import bcrypt as passlib_bcrypt
 
 CREDENTIALS_DIR = str(Path.home() / ".fisher")
 CREDENTIALS_FILE = str(Path.home() / ".fisher" / "credentials.json")
@@ -92,7 +95,12 @@ def create_access_token(
 
 
 def get_current_user(token: str) -> str:
-    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except ExpiredSignatureError:
+        raise JWTError("Token has expired")
+    except JWTError as e:
+        raise JWTError(f"Invalid token: {e}")
     username: str = payload.get("sub")
     if username is None:
         raise JWTError("Token missing subject")

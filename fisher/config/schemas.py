@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, model_validator
 
 
@@ -73,7 +73,7 @@ class StrategyConfig(BaseModel):
 
 class PreTradeRuleConfig(BaseModel):
     rule: str
-    params: dict = {}
+    params: dict[str, Any] = {}
 
 
 class RealtimeRiskConfig(BaseModel):
@@ -142,7 +142,7 @@ class BenchmarkConfig(BaseModel):
 
 class BrokerConfig(BaseModel):
     name: str = "paper"
-    params: dict = {}
+    params: dict[str, Any] = {}
 
 
 class AppConfig(BaseModel):

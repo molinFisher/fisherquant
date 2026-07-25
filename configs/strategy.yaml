@@ -5,6 +5,12 @@ universe:
   exclude_new: true
 
 strategies: []
+# Example strategy entry:
+# strategies:
+#   - name: momentum
+#     params:
+#       fast_window: 5
+#       slow_window: 20
 
 portfolio:
   method: equal_weight

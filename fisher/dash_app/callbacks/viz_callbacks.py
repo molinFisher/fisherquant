@@ -30,12 +30,12 @@ def register_viz_callbacks(app):
     )
     def load_backtest_from_url(search):
         if not search:
-            return None, None, "请输入回测ID或在回测中心点击"查看完整看板"", {"display": "none"}
+            return None, None, '请输入回测ID或在回测中心点击"查看完整看板"', {"display": "none"}
 
         params = parse_qs(search.lstrip("?"))
         backtest_id = params.get("backtest_id", [None])[0]
         if not backtest_id:
-            return None, None, "请输入回测ID或在回测中心点击"查看完整看板"", {"display": "none"}
+            return None, None, '请输入回测ID或在回测中心点击"查看完整看板"', {"display": "none"}
 
         try:
             serializer = BacktestSerializer()

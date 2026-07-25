@@ -12,7 +12,7 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
 )
 app.title = "FisherQuant"
-app._favicon = "📊"
+app._favicon = ""
 app.layout = create_layout()
 register_all_callbacks(app)
 

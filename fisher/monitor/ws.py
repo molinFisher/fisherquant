@@ -42,7 +42,7 @@ async def _ws_auth_and_listen(ws: WebSocket, channel: str):
         token = auth_msg.get("token", "")
         get_current_user(token)
     except Exception:
-        await ws.close(code=4001)
+        await ws.close(code=4001, reason="Authentication failed")
         return
     await manager.connect(ws, channel)
     try:

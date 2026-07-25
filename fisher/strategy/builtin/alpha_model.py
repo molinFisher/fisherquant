@@ -23,7 +23,7 @@ class AlphaModelStrategy(Strategy):
         bottom_tickers = sorted_tickers[-self._top_n:] if len(sorted_tickers) >= self._top_n * 2 else []
 
         for ticker, score in top_tickers:
-            self.emit_signal(ticker, "a_share", OrderSide.BUY, 100, 0.0, min(abs(score), 1.0), "alpha_top")
+            self.emit_signal(ticker, "a_share", OrderSide.BUY, 100, 0.0, min(max(score, 0.0), 1.0), "alpha_top")
 
         for ticker, score in bottom_tickers:
-            self.emit_signal(ticker, "a_share", OrderSide.SELL, 100, 0.0, min(abs(score), 1.0), "alpha_bottom")
+            self.emit_signal(ticker, "a_share", OrderSide.SELL, 100, 0.0, min(max(-score, 0.0), 1.0), "alpha_bottom")

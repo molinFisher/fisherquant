@@ -1,4 +1,3 @@
-from collections import defaultdict
 from datetime import datetime
 import polars as pl
 from ..event.types import Signal, OrderSide, OrderStatus
@@ -79,7 +78,7 @@ class BacktestEngine:
 
     def _compute_nav(self) -> float:
         account = self._paper.get_account()
-        cash = account["available"]
+        cash = account["capital"]
         positions_value = sum(
             p["market_value"] for p in self._positions.get_all_positions().values()
         )

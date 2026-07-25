@@ -1,3 +1,9 @@
+"""Event-system dataclasses for FisherQuant.
+
+MarketSnapshot and Bar classes below extend the base Event dataclass
+and serve as event-carriers for the event bus. For plain model-only
+versions of these types, see fisher.market.model.
+"""
 from dataclasses import dataclass, field
 from enum import Enum
 import time as _time

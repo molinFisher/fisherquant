@@ -10,6 +10,10 @@ pre_trade:
   - rule: SectorLimit
     params:
       max_pct: 0.3
+      # sector_map should be populated with ticker->sector mapping, e.g.:
+      # sector_map:
+      #   "000001.SZ": "Finance"
+      #   "600519.SH": "Consumer"
 
 realtime:
   var_confidence: 0.99
