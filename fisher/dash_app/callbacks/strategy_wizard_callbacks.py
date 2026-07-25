@@ -1,149 +1,50 @@
 import json
-import os
-import base64
-import io
 from datetime import datetime
-from pathlib import Path
 
 import dash
-from dash import Input, Output, State, callback, no_update, html, dcc, ctx, ALL, MATCH
+from dash import Input, Output, State, callback, no_update, html, dcc, ALL
 import dash_bootstrap_components as dbc
 
+from fisher.dash_app.services import get_strategy_service
+from fisher.dash_app.services.models import StrategyConfig
 from fisher.dash_app.pages.strategy_center import (
     _render_wizard_step_0,
     _render_wizard_step_1,
     _render_wizard_step_2,
     _render_wizard_step_3,
-    _build_strategy_table,
 )
 from fisher.strategy.dsl import validate_dsl
 
-
-STRATEGIES_DIR = Path("strategies")
-
 TEMPLATES = {
     "sma": {
-        "name": "SMA均线交叉",
-        "type": "sma_cross",
+        "name": "SMA均线交叉", "type": "sma_cross",
         "description": "SMA均线交叉策略 - 快线上穿慢线买入，下穿卖出",
-        "params": {"fast": 5, "slow": 20},
-        "symbols": [],
-        "enabled": True,
+        "params": {"fast": 5, "slow": 20}, "symbols": [], "enabled": True,
     },
     "macd": {
-        "name": "MACD策略",
-        "type": "macd",
+        "name": "MACD策略", "type": "macd",
         "description": "MACD金叉死叉策略 - DIF上穿DEA买入，下穿卖出",
-        "params": {"fast": 12, "slow": 26, "signal": 9},
-        "symbols": [],
-        "enabled": True,
+        "params": {"fast": 12, "slow": 26, "signal": 9}, "symbols": [], "enabled": True,
     },
     "bollinger": {
-        "name": "布林带策略",
-        "type": "bollinger",
+        "name": "布林带策略", "type": "bollinger",
         "description": "布林带策略 - 价格跌破下轨买入，突破上轨卖出",
-        "params": {"period": 20, "std": 2},
-        "symbols": [],
-        "enabled": True,
+        "params": {"period": 20, "std": 2}, "symbols": [], "enabled": True,
     },
     "rsi": {
-        "name": "RSI策略",
-        "type": "rsi",
+        "name": "RSI策略", "type": "rsi",
         "description": "RSI超买超卖策略 - 超卖区买入，超买区卖出",
-        "params": {"period": 14, "overbought": 70, "oversold": 30},
-        "symbols": [],
-        "enabled": True,
+        "params": {"period": 14, "overbought": 70, "oversold": 30}, "symbols": [], "enabled": True,
     },
     "buyhold": {
-        "name": "买入持有",
-        "type": "buy_and_hold",
+        "name": "买入持有", "type": "buy_and_hold",
         "description": "买入持有策略 - 策略启动时买入，长期持有",
-        "params": {},
-        "symbols": [],
-        "enabled": True,
+        "params": {}, "symbols": [], "enabled": True,
     },
 }
 
-TYPE_LABELS = {
-    "sma_cross": "均线交叉",
-    "macd": "MACD",
-    "bollinger": "布林带",
-    "rsi": "RSI",
-    "buy_and_hold": "买入持有",
-    "custom": "自定义DSL",
-}
 
-
-def _load_all_strategies():
-    strategies = []
-    dir_path = STRATEGIES_DIR
-    if not dir_path.exists():
-        dir_path.mkdir(parents=True, exist_ok=True)
-        return strategies
-    for f in sorted(dir_path.glob("*.json")):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if "name" not in data:
-                data["name"] = f.stem
-            strategies.append(data)
-        except (json.JSONDecodeError, IOError):
-            continue
-    return strategies
-
-
-def _save_strategy(data):
-    dir_path = STRATEGIES_DIR
-    dir_path.mkdir(parents=True, exist_ok=True)
-    name = data.get("name", "untitled")
-    filepath = dir_path / f"{name}.json"
-    filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _delete_strategy(name):
-    filepath = STRATEGIES_DIR / f"{name}.json"
-    if filepath.exists():
-        filepath.unlink()
-
-
-def _get_cached_symbols():
-    try:
-        from fisher.store.engine import DuckDBManager
-        db = DuckDBManager()
-        if not db._initialized:
-            db_path = "./data/fisherquant.db"
-            try:
-                db.connect(db_path, read_pool_size=4)
-            except Exception:
-                pass
-        df = db.query_df("SELECT DISTINCT ticker FROM bars_daily ORDER BY ticker")
-        return [{"label": r[0], "value": r[0]} for r in df.iter_rows()]
-    except Exception:
-        return []
-
-
-def register_strategy_callbacks(app):
-    @app.callback(
-        Output("strategy-table-container", "children"),
-        Output("strategy-list-store", "data"),
-        Input("url", "pathname"),
-    )
-    def refresh_strategy_table(pathname):
-        strategies = _load_all_strategies()
-        table = _build_strategy_list(strategies)
-        return table, strategies
-
-    @app.callback(
-        Output("strategy-table-container", "children", allow_duplicate=True),
-        Output("strategy-list-store", "data", allow_duplicate=True),
-        Input("strategy-refresh-trigger", "data"),
-        Input("url", "pathname"),
-        prevent_initial_call=True,
-    )
-    def refresh_strategy_table_after_action(refresh_data, pathname):
-        strategies = _load_all_strategies()
-        table = _build_strategy_list(strategies)
-        return table, strategies
-
+def register_strategy_wizard_callbacks(app):
     @app.callback(
         Output("strategy-wizard-modal", "is_open"),
         Output("strategy-wizard-body", "children"),
@@ -157,7 +58,7 @@ def register_strategy_callbacks(app):
         prevent_initial_call=True,
     )
     def open_wizard_for_create(create_clicks, edit_clicks_list):
-        triggered = ctx.triggered[0] if ctx.triggered else None
+        triggered = dash.ctx.triggered[0] if dash.ctx.triggered else None
         if not triggered:
             return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
@@ -175,10 +76,10 @@ def register_strategy_callbacks(app):
             except Exception:
                 return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
-            filepath = STRATEGIES_DIR / f"{name}.json"
-            if not filepath.exists():
+            svc = get_strategy_service()
+            data = svc.get_strategy(name)
+            if data is None:
                 return no_update, no_update, no_update, no_update, no_update, no_update, no_update
-            data = json.loads(filepath.read_text(encoding="utf-8"))
             step = 0
             wizard_state = {"step": step, "data": data}
             body = _render_wizard_body(step, data)
@@ -210,7 +111,7 @@ def register_strategy_callbacks(app):
         current_state, edit_id,
         name_val, type_val, description_val, symbols_val,
     ):
-        triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
+        triggered = dash.ctx.triggered[0]["prop_id"].split(".")[0] if dash.ctx.triggered else ""
         step = (current_state or {}).get("step", 0)
         wizard_data = (current_state or {}).get("data", {})
 
@@ -279,120 +180,22 @@ def register_strategy_callbacks(app):
             params = wizard_data.get("params", {})
             symbols = wizard_data.get("symbols", []) or []
             desc = wizard_data.get("description", "")
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            existing = [s for s in _load_all_strategies() if s.get("name") == name]
-            created_at = existing[0].get("created_at", now) if existing and edit_id else now
+            svc = get_strategy_service()
+            existing = svc.get_strategy(name)
 
-            strategy_doc = {
-                "name": name,
-                "type": stype,
-                "description": desc,
-                "params": params,
-                "symbols": symbols,
-                "enabled": existing[0].get("enabled", True) if existing and edit_id else True,
-                "created_at": created_at,
-                "updated_at": now,
-            }
-            _save_strategy(strategy_doc)
+            cfg = StrategyConfig(
+                name=name,
+                type=stype,
+                description=desc,
+                params=params,
+                symbols=symbols,
+                enabled=existing.get("enabled", True) if existing else True,
+            )
+            svc.save_strategy(cfg)
             return False, "", "", "", {"step": 0, "data": {}}
 
         return no_update, no_update, no_update, no_update, no_update
-
-    @app.callback(
-        Output("strategy-refresh-trigger", "data"),
-        Input({"type": "strategy-delete-btn", "index": ALL}, "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def handle_delete(clicks_list):
-        triggered = ctx.triggered
-        if not triggered or not any(v for v in (clicks_list or []) if v):
-            return no_update
-        for i, t in enumerate(triggered):
-            if t.get("value"):
-                try:
-                    tid = json.loads(t["prop_id"].split(".")[0])
-                    name = tid.get("index", "")
-                    if name:
-                        _delete_strategy(name)
-                except Exception:
-                    pass
-        return datetime.now().isoformat()
-
-    @app.callback(
-        Output("strategy-refresh-trigger", "data", allow_duplicate=True),
-        Input({"type": "strategy-toggle-switch", "index": ALL}, "value"),
-        prevent_initial_call=True,
-    )
-    def handle_toggle(values):
-        triggered = ctx.triggered
-        if not triggered:
-            return no_update
-        for i, t_item in enumerate(triggered):
-            try:
-                tid = json.loads(t_item["prop_id"].split(".")[0])
-                name = tid.get("index", "")
-                new_val = t_item.get("value")
-                if name and new_val is not None:
-                    filepath = STRATEGIES_DIR / f"{name}.json"
-                    if filepath.exists():
-                        data = json.loads(filepath.read_text(encoding="utf-8"))
-                        data["enabled"] = bool(new_val)
-                        filepath.write_text(
-                            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-                        )
-            except Exception:
-                pass
-        return datetime.now().isoformat()
-
-    @app.callback(
-        Output("strategy-export-download", "data"),
-        Input({"type": "strategy-export-btn", "index": ALL}, "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def handle_export(clicks_list):
-        triggered = ctx.triggered
-        if not triggered or not any(v for v in (clicks_list or []) if v):
-            return no_update
-        for i, t_item in enumerate(triggered):
-            if t_item.get("value"):
-                try:
-                    tid = json.loads(t_item["prop_id"].split(".")[0])
-                    name = tid.get("index", "")
-                    filepath = STRATEGIES_DIR / f"{name}.json"
-                    if filepath.exists():
-                        content = filepath.read_text(encoding="utf-8")
-                        return dcc.send_string(content, filename=f"{name}.json")
-                except Exception:
-                    pass
-        return no_update
-
-    @app.callback(
-        Output("strategy-refresh-trigger", "data", allow_duplicate=True),
-        Input("strategy-import-upload", "contents"),
-        State("strategy-import-upload", "filename"),
-        prevent_initial_call=True,
-    )
-    def handle_import(contents, filename):
-        if not contents:
-            return no_update
-        try:
-            _, content_string = contents.split(",")
-            decoded = base64.b64decode(content_string)
-            data = json.loads(decoded.decode("utf-8"))
-            if "name" not in data:
-                return no_update
-            data.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            data.setdefault("updated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            data.setdefault("enabled", True)
-            data.setdefault("symbols", [])
-            data.setdefault("type", "custom")
-            data.setdefault("params", {})
-            data.setdefault("description", "")
-            _save_strategy(data)
-        except Exception:
-            pass
-        return datetime.now().isoformat()
 
     @app.callback(
         Output("strategy-wizard-modal", "is_open", allow_duplicate=True),
@@ -409,12 +212,10 @@ def register_strategy_callbacks(app):
         prevent_initial_call=True,
     )
     def handle_template(t1, t2, t3, t4, t5):
-        triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
+        triggered = dash.ctx.triggered[0]["prop_id"].split(".")[0] if dash.ctx.triggered else ""
         tmpl_map = {
-            "template-sma": "sma",
-            "template-macd": "macd",
-            "template-bollinger": "bollinger",
-            "template-rsi": "rsi",
+            "template-sma": "sma", "template-macd": "macd",
+            "template-bollinger": "bollinger", "template-rsi": "rsi",
             "template-buyhold": "buyhold",
         }
         key = tmpl_map.get(triggered)
@@ -425,7 +226,9 @@ def register_strategy_callbacks(app):
         tmpl["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         tmpl["updated_at"] = tmpl["created_at"]
         base_name = tmpl["name"]
-        existing_names = {s.get("name", "") for s in _load_all_strategies()}
+
+        svc = get_strategy_service()
+        existing_names = {s.get("name", "") for s in svc.list_strategies()}
         unique_name = base_name
         counter = 1
         while unique_name in existing_names:
@@ -433,16 +236,15 @@ def register_strategy_callbacks(app):
             counter += 1
         tmpl["name"] = unique_name
 
-        _save_strategy(tmpl)
+        cfg = StrategyConfig(
+            name=tmpl["name"], type=tmpl["type"],
+            description=tmpl.get("description", ""),
+            params=tmpl.get("params", {}),
+            symbols=tmpl.get("symbols", []),
+            enabled=tmpl.get("enabled", True),
+        )
+        svc.save_strategy(cfg)
         return no_update, no_update, no_update, no_update, no_update, no_update
-
-    @app.callback(
-        Output("strategy-import-upload", "contents"),
-        Input("strategy-import-btn", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def trigger_import_file_dialog(n_clicks):
-        return no_update
 
     @app.callback(
         Output("wizard-symbols", "options"),
@@ -469,90 +271,17 @@ def register_strategy_callbacks(app):
         return _render_wizard_step_1(type_val, data)
 
 
-def _build_strategy_list(strategies):
-    if not strategies:
-        return html.Div(
-            [
-                html.H5("暂无策略", className="text-muted text-center mt-4"),
-                html.P('点击"新建策略"按钮开始创建', className="text-muted text-center"),
-            ]
-        )
-
-    header = dbc.Row(
-        [
-            dbc.Col("名称", width=2, className="fw-bold"),
-            dbc.Col("类型", width=1, className="fw-bold"),
-            dbc.Col("标的", width=1, className="fw-bold"),
-            dbc.Col("参数", width=3, className="fw-bold"),
-            dbc.Col("启用", width=1, className="fw-bold"),
-            dbc.Col("创建时间", width=2, className="fw-bold"),
-            dbc.Col("操作", width=2, className="fw-bold"),
-        ],
-        className="border-bottom pb-2 mb-2",
-    )
-
-    rows = [header]
-    for s in strategies:
-        name = s.get("name", "")
-        stype = s.get("type", "")
-        sym_count = len(s.get("symbols", []))
-        sym_display = str(sym_count) if sym_count else "全部"
-        params = s.get("params", {})
-        if params:
-            p_items = [f"{k}:{v}" for k, v in params.items() if k != "dsl_config"]
-            if "dsl_config" in params:
-                p_items.append("DSL配置")
-            params_summary = ", ".join(p_items)[:50]
-        else:
-            params_summary = "-"
-        enabled = s.get("enabled", True)
-        created_at = s.get("created_at", "")[:16]
-
-        row = dbc.Row(
-            [
-                dbc.Col(html.Strong(name), width=2),
-                dbc.Col(html.Small(TYPE_LABELS.get(stype, stype)), width=1),
-                dbc.Col(html.Small(sym_display), width=1),
-                dbc.Col(html.Small(params_summary, className="text-muted"), width=3),
-                dbc.Col(
-                    dbc.Switch(
-                        id={"type": "strategy-toggle-switch", "index": name},
-                        value=enabled,
-                        className="mt-1",
-                    ),
-                    width=1,
-                ),
-                dbc.Col(html.Small(created_at, className="text-muted"), width=2),
-                dbc.Col(
-                    dbc.ButtonGroup(
-                        [
-                            dbc.Button(
-                                "编辑", id={"type": "strategy-edit-btn", "index": name},
-                                color="outline-primary", size="sm",
-                            ),
-                            dbc.Button(
-                                "导出", id={"type": "strategy-export-btn", "index": name},
-                                color="outline-secondary", size="sm",
-                            ),
-                            dbc.Button(
-                                "删除", id={"type": "strategy-delete-btn", "index": name},
-                                color="outline-danger", size="sm",
-                            ),
-                        ],
-                        size="sm",
-                    ),
-                    width=2,
-                ),
-            ],
-            className="border-bottom py-2 align-items-center",
-        )
-        rows.append(row)
-
-    return html.Div(rows)
+def _get_cached_symbols():
+    try:
+        from fisher.dash_app.services import get_data_service
+        svc = get_data_service()
+        rows = svc.get_cached_table(market_filter="all")
+        return [{"label": r["ticker"], "value": r["ticker"]} for r in rows]
+    except Exception:
+        return []
 
 
 def _add_error_to_footer(footer_elements, error_msg):
-    """Adds an error alert to the wizard footer."""
     if not isinstance(footer_elements, list):
         footer_elements = [footer_elements] if footer_elements else []
     alert = html.Div(
@@ -592,7 +321,7 @@ def _get_wizard_title(edit_id):
 
 
 def _collect_params_from_states():
-    states = ctx.states
+    states = dash.ctx.states
     stype = ""
     wizard_data = {}
 
