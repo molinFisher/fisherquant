@@ -6,18 +6,21 @@ from fisher.dash_app.pages.strategy_center import create_strategy_center_layout
 from fisher.dash_app.pages.factor_center import create_factor_center_layout
 from fisher.dash_app.pages.backtest_center import create_backtest_center_layout
 from fisher.dash_app.pages.visual_dashboard import create_visual_dashboard_layout
+from fisher.dash_app.pages.report_center import create_report_center_layout
+from fisher.dash_app.pages.quote_board import create_quote_board_layout
+from fisher.dash_app.pages.settings import create_settings_layout
 
 PAGE_MAP = {
     "/": create_home_layout,
     "/home": create_home_layout,
     "/data-center": create_data_center_layout,
-    "/market-watch": lambda: html.Div([html.H3("行情看板"), html.P("建设中...")]),
+    "/market-watch": create_quote_board_layout,
     "/strategy-center": create_strategy_center_layout,
     "/factor-center": create_factor_center_layout,
     "/backtest-center": create_backtest_center_layout,
     "/visual-dashboard": create_visual_dashboard_layout,
-    "/report-center": lambda: html.Div([html.H3("报告中心"), html.P("建设中...")]),
-    "/settings": lambda: html.Div([html.H3("系统设置"), html.P("建设中...")]),
+    "/report-center": create_report_center_layout,
+    "/settings": create_settings_layout,
 }
 
 PAGE_TO_NAV_ID = {
@@ -85,3 +88,12 @@ def register_all_callbacks(app):
 
     from fisher.dash_app.callbacks.viz_callbacks import register_viz_callbacks
     register_viz_callbacks(app)
+
+    from fisher.dash_app.callbacks.report_callbacks import register_report_callbacks
+    register_report_callbacks(app)
+
+    from fisher.dash_app.callbacks.quote_callbacks import register_quote_callbacks
+    register_quote_callbacks(app)
+
+    from fisher.dash_app.callbacks.settings_callbacks import register_settings_callbacks
+    register_settings_callbacks(app)
