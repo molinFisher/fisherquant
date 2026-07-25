@@ -22,6 +22,7 @@ def create_strategy_center_layout():
                                 style={"display": "none"},
                             ),
                             dcc.Download(id="strategy-export-download"),
+                            html.Div(id="strategy-import-toast"),
                         ],
                         width="auto",
                     ),

@@ -1,9 +1,12 @@
 import json
+import logging
 from datetime import datetime
 
 import dash
 from dash import Input, Output, State, callback, no_update, html, dcc, ALL
 import dash_bootstrap_components as dbc
+
+logger = logging.getLogger(__name__)
 
 from fisher.dash_app.services import get_strategy_service
 from fisher.dash_app.services.models import StrategyConfig
@@ -73,7 +76,8 @@ def register_strategy_wizard_callbacks(app):
             try:
                 triggered_id = json.loads(prop_id.split(".")[0])
                 name = triggered_id.get("index", "")
-            except Exception:
+            except Exception as e:
+                logger.error("Failed to parse edit button: %s", e)
                 return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
             svc = get_strategy_service()
@@ -181,6 +185,12 @@ def register_strategy_wizard_callbacks(app):
             symbols = wizard_data.get("symbols", []) or []
             desc = wizard_data.get("description", "")
 
+            if not name or not name.strip():
+                body = _render_wizard_body(step, wizard_data)
+                footer = _build_wizard_footer(step)
+                footer_with_err = _add_error_to_footer(footer, "策略名称不能为空")
+                return True, body, footer_with_err, _get_wizard_title(edit_id), {"step": step, "data": wizard_data}
+
             svc = get_strategy_service()
             existing = svc.get_strategy(name)
 
@@ -204,6 +214,8 @@ def register_strategy_wizard_callbacks(app):
         Output("strategy-wizard-title", "children", allow_duplicate=True),
         Output("strategy-wizard-state", "data", allow_duplicate=True),
         Output("strategy-edit-id", "data", allow_duplicate=True),
+        Output("strategy-table-container", "children", allow_duplicate=True),
+        Output("strategy-list-store", "data", allow_duplicate=True),
         Input("template-sma", "n_clicks"),
         Input("template-macd", "n_clicks"),
         Input("template-bollinger", "n_clicks"),
@@ -220,7 +232,7 @@ def register_strategy_wizard_callbacks(app):
         }
         key = tmpl_map.get(triggered)
         if not key:
-            return no_update, no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
         tmpl = json.loads(json.dumps(TEMPLATES[key]))
         tmpl["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -244,7 +256,10 @@ def register_strategy_wizard_callbacks(app):
             enabled=tmpl.get("enabled", True),
         )
         svc.save_strategy(cfg)
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        strategies = svc.list_strategies()
+        from fisher.dash_app.callbacks.strategy_crud_callbacks import _build_strategy_list
+        table = _build_strategy_list(strategies)
+        return no_update, no_update, no_update, no_update, no_update, no_update, table, strategies
 
     @app.callback(
         Output("wizard-symbols", "options"),
@@ -277,7 +292,8 @@ def _get_cached_symbols():
         svc = get_data_service()
         rows = svc.get_cached_table(market_filter="all")
         return [{"label": r["ticker"], "value": r["ticker"]} for r in rows]
-    except Exception:
+    except Exception as e:
+        logger.warning("Get cached symbols failed: %s", e)
         return []
 
 

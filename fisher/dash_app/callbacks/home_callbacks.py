@@ -1,5 +1,6 @@
 import logging
 
+import dash
 from dash import Input, Output, callback, no_update
 from dash import html, dcc
 import dash_bootstrap_components as dbc

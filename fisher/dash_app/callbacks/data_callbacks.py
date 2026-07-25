@@ -28,17 +28,18 @@ def register_data_callbacks(app):
         Output("symbol-search-results", "value"),
         Output("search-status", "children"),
         Input("symbol-search-input", "value"),
+        State("symbol-search-results", "value"),
         prevent_initial_call=True,
     )
-    def search_symbols(query):
+    def search_symbols(query, current_value):
         if not query or len(query.strip()) < 2:
-            return [], None, ""
+            return [], no_update, ""
 
         svc = get_data_service()
         results = svc.search_symbols(query.strip())
         if not results:
-            return [], None, "未找到结果"
-        return results, None, f"找到 {len(results)} 个结果"
+            return [], no_update, "未找到结果"
+        return results, no_update, f"找到 {len(results)} 个结果"
 
     @app.callback(
         Output("fetch-progress-bar", "value"),

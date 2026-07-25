@@ -369,6 +369,22 @@ def _create_advanced_tab():
                                                 value="csv",
                                                 placeholder="选择导出格式",
                                             ),
+                                            dbc.Label("筛选标的（可选，逗号分隔）", className="mt-2"),
+                                            dbc.Input(
+                                                id="export-symbol-input",
+                                                placeholder="如: 600519.SH, 000001.SZ",
+                                                className="mb-1",
+                                            ),
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Label("起始日期"),
+                                                    dcc.DatePickerSingle(id="export-start-date", date=""),
+                                                ]),
+                                                dbc.Col([
+                                                    dbc.Label("截止日期"),
+                                                    dcc.DatePickerSingle(id="export-end-date", date=""),
+                                                ]),
+                                            ], className="mb-1"),
                                             dbc.Button(
                                                 "导出数据",
                                                 id="export-data-btn",

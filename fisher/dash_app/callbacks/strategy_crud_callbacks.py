@@ -1,10 +1,13 @@
 import json
 import base64
+import logging
 from datetime import datetime
 
 import dash
 from dash import Input, Output, State, callback, no_update, html, dcc, ALL
 import dash_bootstrap_components as dbc
+
+logger = logging.getLogger(__name__)
 
 from fisher.dash_app.services import get_strategy_service
 from fisher.dash_app.services.models import StrategyConfig
@@ -62,8 +65,8 @@ def register_strategy_crud_callbacks(app):
                     name = tid.get("index", "")
                     if name:
                         svc.delete_strategy(name)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error("Delete strategy failed: %s", e)
         return datetime.now().isoformat()
 
     @app.callback(
@@ -95,8 +98,8 @@ def register_strategy_crud_callbacks(app):
                             enabled=bool(new_val),
                         )
                         svc.save_strategy(cfg)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error("Toggle strategy failed: %s", e)
         return datetime.now().isoformat()
 
     @app.callback(
@@ -118,29 +121,39 @@ def register_strategy_crud_callbacks(app):
                     content = svc.export_json(name)
                     if content:
                         return dcc.send_string(content, filename=f"{name}.json")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error("Export strategy failed: %s", e)
         return no_update
 
     @app.callback(
         Output("strategy-refresh-trigger", "data", allow_duplicate=True),
+        Output("strategy-import-toast", "children"),
         Input("strategy-import-upload", "contents"),
         State("strategy-import-upload", "filename"),
         prevent_initial_call=True,
     )
     def handle_import(contents, filename):
         if not contents:
-            return no_update
+            return no_update, ""
         try:
             _, content_string = contents.split(",")
             decoded = base64.b64decode(content_string)
             svc = get_strategy_service()
             result = svc.import_json(decoded.decode("utf-8"))
             if result.get("status") == "error":
-                return no_update
-        except Exception:
-            return no_update
-        return datetime.now().isoformat()
+                errors = result.get("errors", [])
+                logger.warning("Import strategy errors: %s", errors)
+                return no_update, html.Div(
+                    [dbc.Alert(f"导入失败: {err}", color="danger", className="py-1 mb-1 small") for err in errors]
+                )
+            return datetime.now().isoformat(), html.Div(
+                dbc.Alert("导入成功", color="success", className="py-1 mb-1 small")
+            )
+        except (json.JSONDecodeError, ValueError, Exception) as e:
+            logger.error("Import strategy failed: %s", e)
+            return no_update, html.Div(
+                dbc.Alert(f"导入失败: {e}", color="danger", className="py-1 mb-1 small")
+            )
 
     @app.callback(
         Output("strategy-import-upload", "contents"),

@@ -25,8 +25,8 @@ class DataCenterService:
                     {"label": f"{r['code']} - {r['name']}", "value": r["code"]}
                     for r in cached.to_dicts()
                 ]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Symbol cache lookup failed: %s", e)
 
         try:
             df = ak.stock_info_a_code_name()

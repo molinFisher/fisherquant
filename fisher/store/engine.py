@@ -39,24 +39,29 @@ class DuckDBManager:
             self.connect(path, read_pool_size)
         self._initialized = True
 
+    _connect_lock = threading.Lock()
+
     def connect(self, path: str, read_pool_size: int = 4):
-        self._closed = False
-        if self._write_conn is not None:
-            with self._write_lock:
-                self._write_conn.close()
-                self._write_conn = None
-        while not self._read_pool.empty():
-            try:
-                self._read_pool.get_nowait().close()
-            except queue.Empty:
-                break
-        self._path = path
-        self._write_conn = duckdb.connect(path)
-        self._read_pool_size = read_pool_size
-        for _ in range(read_pool_size):
-            conn = duckdb.connect(path)
-            conn.execute("PRAGMA threads=2")
-            self._read_pool.put(conn)
+        with self._connect_lock:
+            if not self._closed and self._write_conn is not None and self._path == path:
+                return
+            self._closed = False
+            if self._write_conn is not None:
+                with self._write_lock:
+                    self._write_conn.close()
+                    self._write_conn = None
+            while not self._read_pool.empty():
+                try:
+                    self._read_pool.get_nowait().close()
+                except queue.Empty:
+                    break
+            self._path = path
+            self._write_conn = duckdb.connect(path)
+            self._read_pool_size = read_pool_size
+            for _ in range(read_pool_size):
+                conn = duckdb.connect(path)
+                conn.execute("PRAGMA threads=2")
+                self._read_pool.put(conn)
 
     @property
     def write_connection(self) -> duckdb.DuckDBPyConnection:

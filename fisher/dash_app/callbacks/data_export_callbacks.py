@@ -1,9 +1,12 @@
 import io
+import logging
 
 from dash import Input, Output, State, callback, no_update, html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
 from fisher.dash_app.services import get_data_service
+
+logger = logging.getLogger(__name__)
 
 
 def register_data_export_callbacks(app):
@@ -11,13 +14,17 @@ def register_data_export_callbacks(app):
         Output("download-data", "data"),
         Input("export-data-btn", "n_clicks"),
         State("export-format-dropdown", "value"),
+        State("export-symbol-input", "value"),
+        State("export-start-date", "value"),
+        State("export-end-date", "value"),
         prevent_initial_call=True,
     )
-    def export_data(n_clicks, fmt):
+    def export_data(n_clicks, fmt, symbols, start_date, end_date):
         svc = get_data_service()
         try:
             rows = svc.get_cached_table(market_filter="all")
-        except Exception:
+        except Exception as e:
+            logger.error("Export failed: %s", e)
             return None
 
         if not rows:
@@ -25,6 +32,17 @@ def register_data_export_callbacks(app):
 
         import polars as pl
         df = pl.DataFrame(rows)
+
+        if symbols and symbols.strip():
+            sym_list = [s.strip() for s in symbols.replace("\n", ",").split(",") if s.strip()]
+            if sym_list:
+                df = df.filter(pl.col("ticker").is_in(sym_list))
+
+        if start_date:
+            df = df.filter(pl.col("start_date") >= start_date)
+
+        if end_date:
+            df = df.filter(pl.col("end_date") <= end_date)
 
         if fmt == "csv":
             buf = io.StringIO()
