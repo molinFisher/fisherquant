@@ -17,7 +17,7 @@ def create_home_layout():
                             ]),
                             className="stat-card",
                         ),
-                        width=3,
+                        xs=6, sm=6, md=3,
                     ),
                     dbc.Col(
                         dbc.Card(
@@ -28,7 +28,7 @@ def create_home_layout():
                             ]),
                             className="stat-card",
                         ),
-                        width=3,
+                        xs=6, sm=6, md=3,
                     ),
                     dbc.Col(
                         dbc.Card(
@@ -39,7 +39,7 @@ def create_home_layout():
                             ]),
                             className="stat-card",
                         ),
-                        width=3,
+                        xs=6, sm=6, md=3,
                     ),
                     dbc.Col(
                         dbc.Card(
@@ -50,7 +50,7 @@ def create_home_layout():
                             ]),
                             className="stat-card",
                         ),
-                        width=3,
+                        xs=6, sm=6, md=3,
                     ),
                 ],
                 className="mb-4",
@@ -64,7 +64,7 @@ def create_home_layout():
                                 dbc.CardBody(id="recent-backtests", children="暂无回测记录"),
                             ]
                         ),
-                        width=8,
+                        xs=12, lg=8,
                     ),
                     dbc.Col(
                         dbc.Card(
@@ -79,9 +79,63 @@ def create_home_layout():
                                 ),
                             ]
                         ),
-                        width=4,
+                        xs=12, lg=4,
                     ),
-                ]
+                ],
+                className="mb-4",
             ),
+            html.Div(id="first-use-guide", children=_build_first_use_guide()),
         ]
+    )
+
+
+def _build_first_use_guide():
+    return dbc.Card(
+        [
+            dbc.CardHeader([html.H5("新手引导"), html.Small("3步开始量化交易", className="text-muted")]),
+            dbc.CardBody(
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            html.Div(
+                                [
+                                    html.Div("1", className="step-number"),
+                                    html.H6("获取数据", className="mt-2"),
+                                    html.P("在数据中心搜索并下载A股标的的历史行情数据", className="text-muted small"),
+                                    dbc.Button("前往数据中心", href="/data-center", color="outline-primary", size="sm"),
+                                ],
+                                className="text-center p-3",
+                            ),
+                            xs=12, md=4,
+                        ),
+                        dbc.Col(
+                            html.Div(
+                                [
+                                    html.Div("2", className="step-number"),
+                                    html.H6("创建策略", className="mt-2"),
+                                    html.P("使用内置模板或自定义DSL创建交易策略", className="text-muted small"),
+                                    dbc.Button("前往策略中心", href="/strategy-center", color="outline-primary", size="sm"),
+                                ],
+                                className="text-center p-3",
+                            ),
+                            xs=12, md=4,
+                        ),
+                        dbc.Col(
+                            html.Div(
+                                [
+                                    html.Div("3", className="step-number"),
+                                    html.H6("运行回测", className="mt-2"),
+                                    html.P("在回测中心配置参数,运行回测并查看可视化报告", className="text-muted small"),
+                                    dbc.Button("前往回测中心", href="/backtest-center", color="outline-primary", size="sm"),
+                                ],
+                                className="text-center p-3",
+                            ),
+                            xs=12, md=4,
+                        ),
+                    ],
+                    className="mt-2",
+                ),
+            ),
+        ],
+        className="mt-3",
     )

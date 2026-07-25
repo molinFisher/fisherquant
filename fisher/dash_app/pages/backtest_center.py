@@ -48,6 +48,7 @@ def create_backtest_center_layout():
             ),
             dcc.Store(id="bt-submitting", data=False),
             dcc.Store(id="bt-cancel-flag", data=False),
+            dcc.Store(id="bt-shared-config", data={}),
         ]
     )
 

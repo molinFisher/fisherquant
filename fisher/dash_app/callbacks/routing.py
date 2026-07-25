@@ -1,4 +1,4 @@
-from dash import Input, Output, State, callback, html, no_update, ALL
+from dash import Input, Output, State, callback, no_update, ALL
 import dash_bootstrap_components as dbc
 from fisher.dash_app.pages.home import create_home_layout
 from fisher.dash_app.pages.data_center import create_data_center_layout
