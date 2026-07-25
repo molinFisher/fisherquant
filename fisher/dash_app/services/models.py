@@ -49,8 +49,7 @@ class StrategyConfig:
 
     def validate(self) -> list[str]:
         errors = []
-        safe = re.sub(r'[^\w\-\u4e00-\u9fff]', '_', self.name).strip()
-        if not safe:
+        if not self.name or not self.name.strip():
             errors.append("策略名称不能为空")
         if self.type not in TYPE_MAP:
             errors.append(f"未知策略类型: {self.type}")
