@@ -1,0 +1,208 @@
+import tempfile
+from pathlib import Path
+import pytest
+from fisher.store.engine import DuckDBManager
+from fisher.market.rate_limiter import RateLimiter
+from fisher.dash_app.services.data_center_service import DataCenterService
+from fisher.dash_app.services.auto_load_service import AutoLoadService
+
+
+@pytest.fixture
+def in_memory_db(tmp_path):
+    DuckDBManager._instance = None
+    db_path = str(tmp_path / "test.db")
+    db = DuckDBManager(db_path, read_pool_size=1)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS bars_daily (
+            ticker VARCHAR, trade_date DATE, open DOUBLE, high DOUBLE, low DOUBLE,
+            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS bars_minute (
+            ticker VARCHAR, bar_time TIMESTAMP, open DOUBLE, high DOUBLE, low DOUBLE,
+            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR
+        )
+    """)
+    yield db
+    DuckDBManager._instance = None
+
+
+@pytest.fixture
+def limiter():
+    return RateLimiter(max_per_minute=1000)
+
+
+@pytest.fixture
+def data_service(in_memory_db, limiter):
+    return DataCenterService(in_memory_db, limiter)
+
+
+@pytest.fixture
+def mock_scheduler():
+    class MockScheduler:
+        def add_job(self, *args, **kwargs):
+            pass
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def shutdown(self, *args, **kwargs):
+            pass
+    return MockScheduler()
+
+
+@pytest.fixture
+def mock_index_cons(monkeypatch):
+    class MockDF:
+        def __init__(self, data):
+            self._data = data
+
+        def iterrows(self):
+            for i, row in enumerate(self._data):
+                yield i, row
+
+        @property
+        def empty(self):
+            return len(self._data) == 0
+
+        def __len__(self):
+            return len(self._data)
+
+        def to_list(self):
+            return [r.get("value", "") for r in self._data]
+
+    import akshare as ak
+
+    def mock_csi300(*args, **kwargs):
+        return MockDF([
+            {"stock_code": "600519"},
+            {"stock_code": "000001"},
+            {"stock_code": "300750"},
+        ])
+
+    def mock_hsi(*args, **kwargs):
+        return MockDF([
+            {"stock_code": "00700"},
+            {"stock_code": "00941"},
+        ])
+
+    def mock_empty_csi300(*args, **kwargs):
+        return MockDF([])
+
+    monkeypatch.setattr(ak, "index_stock_cons", mock_csi300)
+    monkeypatch.setattr(ak, "hk_index_cons", mock_hsi)
+    return {"csi300": mock_csi300, "hsi": mock_hsi}
+
+
+@pytest.fixture
+def auto_load_service(in_memory_db, limiter, mock_scheduler, mock_index_cons):
+    return AutoLoadService(in_memory_db, limiter, mock_scheduler)
+
+
+class MockBoolList:
+    def __init__(self, data):
+        self._data = data
+
+    def __or__(self, other):
+        if isinstance(other, MockBoolList):
+            return MockBoolList([a or b for a, b in zip(self._data, other._data)])
+        return MockBoolList([a or other for a in self._data])
+
+    def __and__(self, other):
+        if isinstance(other, MockBoolList):
+            return MockBoolList([a and b for a, b in zip(self._data, other._data)])
+        return MockBoolList([a and other for a in self._data])
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+    def __len__(self):
+        return len(self._data)
+
+
+class MockAKShareDF:
+    def __init__(self, data):
+        self._data = data
+        self.columns = list(data[0].keys()) if data else []
+
+    def iterrows(self):
+        for i, row in enumerate(self._data):
+            yield i, row
+
+    @property
+    def empty(self):
+        return len(self._data) == 0
+
+    def __len__(self):
+        return len(self._data)
+
+    def head(self, n):
+        return self
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return MockAKShareSeries([r[key] for r in self._data])
+        if isinstance(key, (list, MockBoolList)):
+            filtered = [self._data[i] for i, v in enumerate(key) if v]
+            return MockAKShareDF(filtered)
+        return self._data
+
+
+class MockAKShareSeries:
+    def __init__(self, data):
+        self._data = data
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def to_list(self):
+        return self._data
+
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+    def __len__(self):
+        return len(self._data)
+
+    @property
+    def str(self):
+        return self
+
+    def contains(self, pat, na=False):
+        return MockBoolList([pat in str(v) for v in self._data])
+
+
+@pytest.fixture
+def mock_akshare(monkeypatch):
+    import akshare as ak
+
+    mock_stocks = [
+        {"code": "600519", "name": "贵州茅台"},
+        {"code": "000001", "name": "平安银行"},
+        {"code": "300750", "name": "宁德时代"},
+    ]
+
+    mock_bars = [
+        {"日期": "2024-01-02", "开盘": 100.0, "最高": 101.0, "最低": 99.0,
+         "收盘": 100.5, "成交量": 1000000, "成交额": 100500000.0},
+        {"日期": "2024-01-03", "开盘": 100.5, "最高": 102.0, "最低": 100.0,
+         "收盘": 101.0, "成交量": 1200000, "成交额": 121200000.0},
+    ]
+
+    def mock_stock_info(*args, **kwargs):
+        return MockAKShareDF(mock_stocks)
+
+    def mock_zh_a_hist(symbol=None, period="daily", start_date="", end_date="", adjust="qfq"):
+        return MockAKShareDF(mock_bars)
+
+    def mock_financial_abstract(symbol=""):
+        return MockAKShareDF([{"报告期": "2024-12-31", "营业收入": 100000000}])
+
+    monkeypatch.setattr(ak, "stock_info_a_code_name", mock_stock_info)
+    monkeypatch.setattr(ak, "stock_zh_a_hist", mock_zh_a_hist)
+    monkeypatch.setattr(ak, "stock_financial_abstract", mock_financial_abstract)
+    return {"stock_info": mock_stock_info, "zh_a_hist": mock_zh_a_hist}
