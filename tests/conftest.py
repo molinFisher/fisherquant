@@ -15,13 +15,16 @@ def in_memory_db(tmp_path):
     db.execute("""
         CREATE TABLE IF NOT EXISTS bars_daily (
             ticker VARCHAR, trade_date DATE, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR
+            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
+            adj_factor DOUBLE DEFAULT 1.0,
+            PRIMARY KEY (ticker, trade_date)
         )
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS bars_minute (
             ticker VARCHAR, bar_time TIMESTAMP, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR
+            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
+            PRIMARY KEY (ticker, bar_time)
         )
     """)
     yield db
@@ -90,9 +93,20 @@ def mock_index_cons(monkeypatch):
     def mock_empty_csi300(*args, **kwargs):
         return MockDF([])
 
-    monkeypatch.setattr(ak, "index_stock_cons", mock_csi300)
-    monkeypatch.setattr(ak, "hk_index_cons", mock_hsi)
-    return {"csi300": mock_csi300, "hsi": mock_hsi}
+    def mock_zh_a_hist_auto(symbol=None, period="daily", start_date="", end_date="", adjust="qfq"):
+        """Return mock bars that match the auto_load_service's expectations."""
+        mock_data = [
+            {"日期": "2024-01-02", "开盘": 100.0, "最高": 101.0, "最低": 99.0,
+             "收盘": 100.5, "成交量": 1000000, "成交额": 100500000.0},
+            {"日期": "2024-01-03", "开盘": 100.5, "最高": 102.0, "最低": 100.0,
+             "收盘": 101.0, "成交量": 1200000, "成交额": 121200000.0},
+        ]
+        return MockAKShareDF(mock_data)
+
+    monkeypatch.setattr(ak, "index_stock_cons", mock_csi300, raising=False)
+    monkeypatch.setattr(ak, "hk_index_cons", mock_hsi, raising=False)
+    monkeypatch.setattr(ak, "stock_zh_a_hist", mock_zh_a_hist_auto, raising=False)
+    return {"csi300": mock_csi300, "hsi": mock_hsi, "zh_a_hist": mock_zh_a_hist_auto}
 
 
 @pytest.fixture

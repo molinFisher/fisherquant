@@ -58,10 +58,10 @@ class DataCenterService:
                         for _, r in df.iterrows():
                             rows.append([ticker, str(r["日期"])[:10], float(r["开盘"]),
                                          float(r["最高"]), float(r["最低"]), float(r["收盘"]),
-                                         int(r["成交量"]), float(r["成交额"]), "a_share"])
+                                         int(r["成交量"]), float(r["成交额"]), "a_share", 1.0])
                         self._db.execute("DELETE FROM bars_daily WHERE ticker=?", [ticker])
                         self._db.execute_many(
-                            "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                            "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
                         results[sym] = {"status": "ok", "count": len(rows)}
                 elif data_type == "financials":
                     fin = ak.stock_financial_abstract(symbol=code)
