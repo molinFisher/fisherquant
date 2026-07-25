@@ -77,8 +77,17 @@ def register_all_callbacks(app):
     from fisher.dash_app.callbacks.data_callbacks import register_data_callbacks
     register_data_callbacks(app)
 
-    from fisher.dash_app.callbacks.strategy_callbacks import register_strategy_callbacks
-    register_strategy_callbacks(app)
+    from fisher.dash_app.callbacks.data_cache_callbacks import register_data_cache_callbacks
+    register_data_cache_callbacks(app)
+
+    from fisher.dash_app.callbacks.data_export_callbacks import register_data_export_callbacks
+    register_data_export_callbacks(app)
+
+    from fisher.dash_app.callbacks.strategy_crud_callbacks import register_strategy_crud_callbacks
+    register_strategy_crud_callbacks(app)
+
+    from fisher.dash_app.callbacks.strategy_wizard_callbacks import register_strategy_wizard_callbacks
+    register_strategy_wizard_callbacks(app)
 
     from fisher.dash_app.callbacks.factor_callbacks import register_factor_callbacks
     register_factor_callbacks(app)
