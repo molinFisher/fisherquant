@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Risk - FisherQuant{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Risk Status</h2>
+    <div hx-get="/api/risk" hx-trigger="every 10s" hx-swap="innerHTML">
+        <p>Status: <span class="badge badge-buy">OK</span></p>
+    </div>
+</div>
+<div class="grid">
+    <div class="card">
+        <h2>VaR</h2>
+        <div style="font-size:24px;" id="var-value">--</div>
+        <div style="color:#888;font-size:12px;">99% Confidence</div>
+    </div>
+    <div class="card">
+        <h2>Max Drawdown</h2>
+        <div style="font-size:24px;" id="mdd-value">0.00%</div>
+        <div style="color:#888;font-size:12px;">Historical</div>
+    </div>
+    <div class="card">
+        <h2>Beta</h2>
+        <div style="font-size:24px;" id="beta-value">--</div>
+        <div style="color:#888;font-size:12px;">vs Benchmark</div>
+    </div>
+</div>
+<div class="card">
+    <h2>Pre-Trade Rules</h2>
+    <table>
+        <thead><tr><th>Rule</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody>
+            <tr><td>MaxPosition</td><td><span class="badge badge-buy">Active</span></td><td>Max 20% per position</td></tr>
+            <tr><td>DailyLossLimit</td><td><span class="badge badge-buy">Active</span></td><td>Max 5% daily loss</td></tr>
+            <tr><td>PriceLimit</td><td><span class="badge badge-buy">Active</span></td><td>+/- 9.5%</td></tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}

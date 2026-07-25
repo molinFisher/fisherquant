@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Alerts - FisherQuant{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Alert Configuration</h2>
+    <table>
+        <thead><tr><th>Channel</th><th>Type</th><th>Events</th><th>Throttle</th></tr></thead>
+        <tbody>
+            <tr><td>Console</td><td>console</td><td>order, risk, system</td><td>60s</td></tr>
+        </tbody>
+    </table>
+</div>
+<div class="card">
+    <h2>Recent Alerts</h2>
+    <div hx-get="/api/risk" hx-trigger="every 10s" hx-swap="innerHTML">
+        <p style="color:#888;">No alerts</p>
+    </div>
+</div>
+{% endblock %}

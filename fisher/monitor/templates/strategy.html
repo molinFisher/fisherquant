@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Strategy - FisherQuant{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Active Strategies</h2>
+    <table>
+        <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Parameters</th></tr></thead>
+        <tbody>
+            <tr><td>Mean Reversion</td><td>CTA</td><td><span class="badge badge-buy">Running</span></td><td>window=20, threshold=2.0</td></tr>
+            <tr><td>Momentum</td><td>Factor</td><td><span class="badge badge-buy">Running</span></td><td>lookback=60, top=10</td></tr>
+        </tbody>
+    </table>
+</div>
+<div class="card">
+    <h2>Signal Log</h2>
+    <table>
+        <thead><tr><th>Time</th><th>Strategy</th><th>Ticker</th><th>Side</th><th>Confidence</th></tr></thead>
+        <tbody><tr><td colspan="5" style="color:#888;">No recent signals</td></tr></tbody>
+    </table>
+</div>
+{% endblock %}

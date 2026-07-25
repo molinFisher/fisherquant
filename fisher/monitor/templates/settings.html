@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Settings - FisherQuant{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>System Configuration</h2>
+    <table>
+        <tbody>
+            <tr><td><strong>Mode</strong></td><td>Paper</td></tr>
+            <tr><td><strong>Event Backend</strong></td><td>Asyncio</td></tr>
+            <tr><td><strong>Log Level</strong></td><td>INFO</td></tr>
+            <tr><td><strong>Market Data</strong></td><td>AKShare</td></tr>
+            <tr><td><strong>Portfolio Method</strong></td><td>Equal Weight</td></tr>
+            <tr><td><strong>Max Positions</strong></td><td>20</td></tr>
+            <tr><td><strong>Initial Capital</strong></td><td>1,000,000 CNY</td></tr>
+        </tbody>
+    </table>
+</div>
+<div class="card">
+    <h2>API Status</h2>
+    <table>
+        <tbody>
+            <tr><td><strong>Version</strong></td><td>0.1.0</td></tr>
+            <tr><td><strong>Python</strong></td><td>3.11</td></tr>
+            <tr><td><strong>Database</strong></td><td>DuckDB</td></tr>
+            <tr><td><strong>Uptime</strong></td><td>--</td></tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}

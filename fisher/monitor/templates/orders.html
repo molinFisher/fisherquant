@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Orders - FisherQuant{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Active Orders</h2>
+    <div hx-get="/api/orders" hx-trigger="every 5s" hx-swap="innerHTML">
+        <table>
+            <thead><tr><th>ID</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
+            <tbody><tr><td colspan="6" style="color:#888;">No active orders</td></tr></tbody>
+        </table>
+    </div>
+</div>
+<div class="card">
+    <h2>Order History</h2>
+    <table>
+        <thead><tr><th>Date</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Price</th><th>Commission</th></tr></thead>
+        <tbody><tr><td colspan="6" style="color:#888;">No trades recorded</td></tr></tbody>
+    </table>
+</div>
+{% endblock %}
