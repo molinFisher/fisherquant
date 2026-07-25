@@ -183,3 +183,10 @@ class SplitEvent(Event):
     ticker: str = ""
     effective_date: str = ""
     split_ratio: float = 1.0
+
+
+@dataclass
+class SuspensionEvent(Event):
+    __event_type__ = "suspension_event"
+    ticker: str = ""
+    market: str = "a_share"

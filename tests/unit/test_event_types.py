@@ -1,7 +1,7 @@
 import time
 from fisher.event.types import (
     Bar, Signal, OrderPending, OrderFilled, PositionUpdate,
-    RiskAlert, MarketOpen, DividendEvent, Event, OrderSide, OrderStatus,
+    RiskAlert, MarketOpen, DividendEvent, SuspensionEvent, Event, OrderSide, OrderStatus,
 )
 
 
@@ -94,3 +94,10 @@ class TestDividendEvent:
             cash_per_share=0.5, bonus_ratio=0.0,
         )
         assert d.cash_per_share == 0.5
+
+
+class TestSuspensionEvent:
+    def test_fields(self):
+        s = SuspensionEvent(ticker="000001.SZ", market="a_share")
+        assert s.ticker == "000001.SZ"
+        assert s.__event_type__ == "suspension_event"
