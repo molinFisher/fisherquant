@@ -254,6 +254,134 @@ def _build_equity_thumbnail(nav):
     return dcc.Graph(figure=fig, config={"displayModeBar": False})
 
 
+def _detect_regimes(closes):
+    if len(closes) < 60:
+        return ["neutral"] * len(closes)
+    ma20 = []
+    ma60 = []
+    for i in range(len(closes)):
+        if i >= 19:
+            ma20.append(sum(closes[i - 19:i + 1]) / 20)
+        else:
+            ma20.append(None)
+        if i >= 59:
+            ma60.append(sum(closes[i - 59:i + 1]) / 60)
+        else:
+            ma60.append(None)
+
+    regimes = ["neutral"] * len(closes)
+    for i in range(60, len(closes)):
+        if ma20[i] is None or ma60[i] is None:
+            continue
+        prev20 = ma20[i - 1] or 0
+        prev60 = ma60[i - 1] or 0
+        curr20 = ma20[i] or 0
+        diff = (curr20 - prev20) / prev20 if prev20 > 0 else 0
+        if curr20 > prev20 and curr20 > ma60[i]:
+            regimes[i] = "bull"
+        elif curr20 < prev20 and curr20 < ma60[i]:
+            regimes[i] = "bear"
+        else:
+            regimes[i] = "sideways"
+    return regimes
+
+
+def _compute_regime_stats(nav, regimes):
+    min_len = min(len(nav), len(regimes))
+    nav = nav[:min_len]
+    regimes = regimes[:min_len]
+
+    bull_returns = []
+    bear_returns = []
+    sideways_returns = []
+
+    for i in range(1, len(nav)):
+        ret = (nav[i] - nav[i - 1]) / nav[i - 1] if nav[i - 1] > 0 else 0
+        if regimes[i] == "bull":
+            bull_returns.append(ret)
+        elif regimes[i] == "bear":
+            bear_returns.append(ret)
+        elif regimes[i] == "sideways":
+            sideways_returns.append(ret)
+
+    def _calc(r_list):
+        if not r_list:
+            return 0.0, 0.0
+        mean_r = sum(r_list) / len(r_list)
+        var_r = sum((r - mean_r) ** 2 for r in r_list) / len(r_list) if len(r_list) > 1 else 0
+        import math
+        std = math.sqrt(var_r)
+        sharpe = (mean_r / std * math.sqrt(252)) if std > 0 else 0.0
+        total_ret = 1.0
+        for r in r_list:
+            total_ret *= (1 + r)
+        return total_ret - 1, sharpe
+
+    bull_ret, bull_sharpe = _calc(bull_returns)
+    bear_ret, bear_sharpe = _calc(bear_returns)
+    side_ret, side_sharpe = _calc(sideways_returns)
+
+    return {
+        "bull": {"return": bull_ret, "sharpe": bull_sharpe, "days": len(bull_returns)},
+        "bear": {"return": bear_ret, "sharpe": bear_sharpe, "days": len(bear_returns)},
+        "sideways": {"return": side_ret, "sharpe": side_sharpe, "days": len(sideways_returns)},
+    }
+
+
+def _build_regime_table(stats):
+    rows = [html.Tr([html.Th("环境"), html.Th("天数"), html.Th("收益"), html.Th("Sharpe")])]
+    color_map = {"bull": ("牛市", "text-success"), "bear": ("熊市", "text-danger"),
+                  "sideways": ("震荡", "text-muted")}
+    for key, (label, color) in color_map.items():
+        s = stats[key]
+        rows.append(html.Tr([
+            html.Td(label, className=color),
+            html.Td(str(s["days"])),
+            html.Td(f"{s['return']*100:.2f}%", className=color),
+            html.Td(f"{s['sharpe']:.2f}"),
+        ]))
+    return html.Table(rows, className="table table-sm table-hover")
+
+
+def _build_regime_equity_chart(nav, regimes, stats):
+    import plotly.graph_objects as go
+    min_len = min(len(nav), len(regimes))
+    nav = nav[:min_len]
+    regimes = regimes[:min_len]
+
+    sampled = lttb([(i, nav[i]) for i in range(len(nav))], 500)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[p[0] for p in sampled], y=[p[1] for p in sampled],
+        mode="lines", name="策略净值",
+        line=dict(color="#0d6efd", width=1.5),
+    ))
+
+    regime_colors = {"bull": "rgba(40,167,69,0.2)", "bear": "rgba(220,53,69,0.2)",
+                     "sideways": "rgba(108,117,125,0.1)"}
+    current_regime = "neutral"
+    start_idx = 0
+    for i in range(1, len(regimes)):
+        if regimes[i] != current_regime or (current_regime == "neutral" and regimes[i] != "neutral"):
+            if current_regime != "neutral" and i > start_idx:
+                color = regime_colors.get(current_regime, "rgba(0,0,0,0.1)")
+                fig.add_vrect(
+                    x0=start_idx, x1=i, fillcolor=color,
+                    layer="below", line_width=0,
+                )
+            current_regime = regimes[i]
+            start_idx = i
+    if current_regime != "neutral":
+        color = regime_colors.get(current_regime, "rgba(0,0,0,0.1)")
+        fig.add_vrect(x0=start_idx, x1=len(regimes) - 1, fillcolor=color, layer="below", line_width=0)
+
+    fig.update_layout(
+        height=300, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return dcc.Graph(figure=fig, config={"displayModeBar": False})
+
+
 def register_backtest_callbacks(app):
     @app.callback(
         Output("bt-strategy-dropdown", "options"),
@@ -924,3 +1052,144 @@ def register_backtest_callbacks(app):
             )
 
         return dcc.Graph(figure=fig, config={"displayModeBar": False})
+
+    @app.callback(
+        Output("bt-history-table", "children"),
+        Input("backtest-tabs", "active_tab"),
+        Input("url", "pathname"),
+    )
+    def load_history(active_tab, pathname):
+        if active_tab != "tab-history":
+            return no_update
+        try:
+            serializer = BacktestSerializer()
+            records = serializer.list_history(limit=200)
+        except Exception:
+            records = []
+
+        if not records:
+            return html.Div("暂无回测记录", className="text-muted text-center mt-4")
+
+        import dash_table
+        columns = [
+            {"name": "时间", "id": "saved_at"},
+            {"name": "策略", "id": "strategy"},
+            {"name": "累计收益", "id": "total_return"},
+            {"name": "Sharpe", "id": "sharpe"},
+            {"name": "最大回撤", "id": "max_dd"},
+            {"name": "操作", "id": "actions"},
+        ]
+        data = []
+        for r in records:
+            ret_val = r.get("total_return", 0) or 0
+            ret_str = f"{ret_val*100:.2f}%" if isinstance(ret_val, float) else f"{float(ret_val)*100:.2f}%"
+            backtest_id = r.get("id", "")
+            data.append({
+                "saved_at": str(r.get("saved_at", ""))[:19],
+                "strategy": r.get("strategy", ""),
+                "total_return": ret_str,
+                "sharpe": f"{r.get('sharpe', 0):.2f}",
+                "max_dd": f"{(r.get('max_dd', 0) or 0)*100:.2f}%",
+                "actions": backtest_id,
+            })
+
+        import dash_table
+        return dash_table.DataTable(
+            id="bt-history-datatable",
+            columns=columns,
+            data=data,
+            page_size=15,
+            sort_action="native",
+            style_table={"overflowX": "auto"},
+            style_cell={"padding": "8px", "fontSize": "13px"},
+            style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
+            style_data_conditional=[
+                {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
+            ],
+        )
+
+    @app.callback(
+        Output("bt-regime-strategy", "options"),
+        Output("bt-regime-symbols", "options"),
+        Input("url", "pathname"),
+    )
+    def load_regime_options(pathname):
+        strategies = _load_strategies()
+        strategy_options = [{"label": s.get("name", ""), "value": json.dumps(s)} for s in strategies]
+        symbols = _get_cached_symbols()
+        return strategy_options, symbols
+
+    @app.callback(
+        Output("bt-regime-results", "children"),
+        Input("bt-regime-run-btn", "n_clicks"),
+        State("bt-regime-strategy", "value"),
+        State("bt-regime-symbols", "value"),
+        State("bt-regime-date-range", "start_date"),
+        State("bt-regime-date-range", "end_date"),
+        State("bt-regime-benchmark", "value"),
+        prevent_initial_call=True,
+        background=True,
+        running=[
+            (Output("bt-regime-run-btn", "disabled"), True, False),
+        ],
+    )
+    def run_regime_analysis(n_clicks, strategy_json, symbols, start_date, end_date,
+                            benchmark_ticker):
+        if not strategy_json:
+            return html.Div("请选择策略", className="text-warning")
+
+        try:
+            sc = json.loads(strategy_json)
+        except json.JSONDecodeError:
+            return html.Div("策略配置解析失败", className="text-danger")
+
+        target_symbols = symbols if symbols else [s["value"] for s in _get_cached_symbols()]
+        if not target_symbols:
+            return html.Div("无可用标的", className="text-warning")
+
+        paper = PaperEngine(initial_capital=1000000.0)
+        positions = PositionService()
+        all_bars = []
+        for sym in target_symbols[:3]:
+            df = _load_bars(sym, start_date, end_date)
+            if len(df) == 0:
+                continue
+            for row in df.iter_rows():
+                all_bars.append(Bar(
+                    ticker=row[0], market=row[8] if len(row) > 8 else "a_share",
+                    open=float(row[2]), high=float(row[3]), low=float(row[4]),
+                    close=float(row[5]), volume=int(row[6] or 0),
+                    amount=float(row[7] or 0), bar_time=0.0,
+                ))
+        if not all_bars:
+            return html.Div("无有效数据", className="text-warning")
+
+        bars_pl = pl.DataFrame([{
+            "ticker": b.ticker, "bar_time": float(b.bar_time),
+            "open": b.open, "high": b.high, "low": b.low,
+            "close": b.close, "volume": b.volume, "amount": b.amount,
+            "market": b.market,
+        } for b in all_bars])
+        strategy = create_strategy(sc)
+        engine = BacktestEngine(bars_df=bars_pl, paper_engine=paper, position_service=positions)
+        res = _run_async(engine.run(strategy))
+        nav = res["nav_history"]
+
+        benchmark_closes = None
+        if benchmark_ticker and benchmark_ticker != "none":
+            b_df = _load_bars(benchmark_ticker, start_date, end_date)
+            if len(b_df) > 0:
+                benchmark_closes = b_df["close"].to_list()
+
+        regimes = _detect_regimes(benchmark_closes or []) if benchmark_closes else []
+
+        regime_stats = _compute_regime_stats(nav, regimes)
+        regime_nav = _build_regime_equity_chart(nav, regimes, regime_stats)
+
+        return html.Div([
+            html.H6("市场环境分析", className="mb-2"),
+            _build_regime_table(regime_stats),
+            html.Hr(),
+            html.H6("净值曲线 (带环境标记)", className="mb-2"),
+            regime_nav,
+        ])

@@ -28,6 +28,8 @@ def create_backtest_center_layout():
                     dbc.Tab(label="多策略对比", tab_id="tab-multi", children=_create_multi_tab()),
                     dbc.Tab(label="滚动优化", tab_id="tab-walkforward", children=_create_walkforward_tab()),
                     dbc.Tab(label="参数敏感性", tab_id="tab-sensitivity", children=_create_sensitivity_tab()),
+                    dbc.Tab(label="回测历史", tab_id="tab-history", children=_create_history_tab()),
+                    dbc.Tab(label="市场环境", tab_id="tab-regime", children=_create_regime_tab()),
                 ],
                 id="backtest-tabs",
                 active_tab="tab-single",
@@ -210,6 +212,66 @@ def _create_sens_results_panel():
         [
             dbc.CardHeader("敏感性分析结果"),
             dbc.CardBody([html.Div(id="bt-sens-results", children="配置参数后点击"开始分析"")]),
+        ]
+    )
+
+
+def _create_history_tab():
+    return dbc.Card(
+        [
+            dbc.CardHeader("回测历史"),
+            dbc.CardBody([html.Div(id="bt-history-table", children="加载中...")]),
+        ]
+    )
+
+
+def _create_regime_tab():
+    return dbc.Row(
+        [
+            dbc.Col(_create_regime_config_panel(), width=4),
+            dbc.Col(_create_regime_results_panel(), width=8),
+        ]
+    )
+
+
+def _create_regime_config_panel():
+    return dbc.Card(
+        [
+            dbc.CardHeader("市场环境分析"),
+            dbc.CardBody(
+                [
+                    dbc.Label("策略"),
+                    dcc.Dropdown(id="bt-regime-strategy", options=[], placeholder="选择策略..."),
+                    dbc.Label("标的", className="mt-2"),
+                    dcc.Dropdown(id="bt-regime-symbols", options=[], multi=True, placeholder="选择标的..."),
+                    dbc.Label("日期范围", className="mt-2"),
+                    dcc.DatePickerRange(
+                        id="bt-regime-date-range",
+                        start_date="2024-01-01",
+                        end_date="2025-06-30",
+                        display_format="YYYY-MM-DD",
+                    ),
+                    dbc.Label("基准指数", className="mt-2"),
+                    dcc.Dropdown(
+                        id="bt-regime-benchmark",
+                        options=BENCHMARK_OPTIONS,
+                        value="000300.SH",
+                        clearable=False,
+                    ),
+                    dbc.Button("开始分析", id="bt-regime-run-btn", color="primary", className="mt-3 w-100"),
+                    dbc.Progress(id="bt-regime-progress-bar", value=0, className="mt-2", style={"height": "4px"}),
+                    html.Div(id="bt-regime-progress-text", className="text-muted small mt-1"),
+                ]
+            ),
+        ]
+    )
+
+
+def _create_regime_results_panel():
+    return dbc.Card(
+        [
+            dbc.CardHeader("市场环境分析结果"),
+            dbc.CardBody([html.Div(id="bt-regime-results", children="配置参数后点击"开始分析"")]),
         ]
     )
 
