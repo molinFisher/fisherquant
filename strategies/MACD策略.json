@@ -1,0 +1,14 @@
+{
+  "name": "MACD策略",
+  "type": "macd",
+  "description": "MACD金叉死叉策略 - DIF上穿DEA买入，下穿卖出",
+  "params": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 9
+  },
+  "symbols": [],
+  "enabled": true,
+  "created_at": "2026-07-25 22:15:17",
+  "updated_at": "2026-07-25 22:15:17"
+}

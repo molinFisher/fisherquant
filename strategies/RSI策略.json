@@ -1,0 +1,14 @@
+{
+  "name": "RSI策略",
+  "type": "rsi",
+  "description": "RSI超买超卖策略 - 超卖区买入，超买区卖出",
+  "params": {
+    "period": 14,
+    "overbought": 70,
+    "oversold": 30
+  },
+  "symbols": [],
+  "enabled": true,
+  "created_at": "2026-07-25 22:15:17",
+  "updated_at": "2026-07-25 22:15:17"
+}

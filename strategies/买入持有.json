@@ -1,0 +1,10 @@
+{
+  "name": "买入持有",
+  "type": "buy_and_hold",
+  "description": "买入持有策略 - 策略启动时买入，长期持有",
+  "params": {},
+  "symbols": [],
+  "enabled": true,
+  "created_at": "2026-07-25 22:15:17",
+  "updated_at": "2026-07-25 22:15:17"
+}
