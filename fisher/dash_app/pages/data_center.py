@@ -21,8 +21,10 @@ def create_data_center_layout():
                 className="mb-3",
             ),
             dcc.Store(id="search-results-store"),
+            dcc.Store(id="fetch-progress-status"),
             dcc.Store(id="fetch-progress-store"),
             dcc.Store(id="toast-trigger"),
+            dcc.Interval(id="fetch-progress-poll", interval=1000),
             html.Div(id="data-center-content"),
             _create_financials_modal(),
         ]
@@ -264,10 +266,6 @@ def register_data_center_callbacks(app):
     def update_auto_load_progress(n):
         try:
             svc = get_auto_load_service()
-            phase = svc.get_status("phase", "idle")
-            # If loading in progress, process next batch in the poll callback
-            if phase == "initial_load":
-                result = svc.initial_load()
             progress = svc.get_progress()
         except Exception as e:
             logger.error("auto-load progress check failed: %s", e)
@@ -301,6 +299,20 @@ def register_data_center_callbacks(app):
             0, "0%",
             "自动加载未运行，请点击「开始自动加载」"
         )
+
+    @app.callback(
+        Output("fetch-progress-bar", "value"),
+        Output("fetch-progress-bar", "label"),
+        Input("fetch-progress-poll", "n_intervals"),
+        State("fetch-progress-status", "data"),
+    )
+    def update_fetch_progress(n, data):
+        if not data:
+            return 0, "0%"
+        current = data.get("current", 0)
+        total = data.get("total", 1)
+        pct = int(current * 100 / max(total, 1))
+        return pct, f"{current}/{total} ({pct}%)"
 
     @app.callback(
         Output("auto-load-action-feedback", "children"),

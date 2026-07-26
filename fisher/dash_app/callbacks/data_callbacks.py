@@ -1,28 +1,6 @@
-import asyncio
 import dash
-from dash import Input, Output, State, callback, no_update, dcc, html, dash_table
+from dash import Input, Output, State, no_update, html
 import dash_bootstrap_components as dbc
-
-from fisher.store.engine import DuckDBManager
-from fisher.store.schema import init_schema
-from fisher.market.rate_limiter import get_global_limiter
-from fisher.market.ticker import resolve_ticker
-from fisher.config.schemas import MarketConfig
-from fisher.market.gateway import GatewayFactory
-
-
-def _get_adapter():
-    cfg = MarketConfig()
-    return GatewayFactory.create(cfg)
-
-
-def _run_async(coro):
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
 
 
 def register_data_callbacks(app):
@@ -49,16 +27,16 @@ def register_data_callbacks(app):
             return [], None, f"搜索异常: {str(e)}"
 
     @app.callback(
-        Output("fetch-progress-bar", "value"),
-        Output("fetch-progress-bar", "label"),
         Output("fetch-status", "children"),
         Output("fetch-list", "children"),
+        Output("fetch-progress-status", "data"),
         Input("fetch-data-button", "n_clicks"),
         State("symbol-search-results", "value"),
         State("batch-symbols-input", "value"),
         State("date-range-picker", "start_date"),
         State("date-range-picker", "end_date"),
         State("data-type-radio", "value"),
+        State("minute-period-selector", "value"),
         prevent_initial_call=True,
         background=True,
         running=[
@@ -66,7 +44,8 @@ def register_data_callbacks(app):
             (Output("fetch-data-button", "children"), "获取中...", "开始获取数据"),
         ],
     )
-    def fetch_data(n_clicks, selected_symbol, batch_input, start_date, end_date, data_type):
+    def fetch_data(n_clicks, selected_symbol, batch_input, start_date, end_date,
+                   data_type, minute_period):
         symbols = []
         if batch_input and batch_input.strip():
             parts = batch_input.strip().replace("\n", ",").split(",")
@@ -79,67 +58,41 @@ def register_data_callbacks(app):
         symbols = symbols[:20]
 
         if not symbols:
-            return 0, "0%", "请先选择或输入标的", "请先搜索并选择标的"
+            return "请先选择或输入标的", "请先搜索并选择标的", {}
 
-        db_path = "./data/fisherquant.db"
-        db = DuckDBManager()
-
-        try:
-            db.connect(db_path, read_pool_size=4)
-        except Exception:
-            pass
-
-        try:
-            init_schema_from_path(db_path)
-        except Exception:
-            pass
-
+        svc = get_data_service()
         total = len(symbols)
         results = []
         errors = []
 
         for i, symbol in enumerate(symbols):
-            progress = int((i / total) * 100)
+            period = minute_period.replace("min", "") if minute_period else ""
             try:
-                adapter = _get_adapter()
-                bars = _run_async(adapter.get_bars(symbol, start_date, end_date))
-                if bars:
-                    rows = []
-                    for b in bars:
-                        d = b.to_dict()
-                        rows.append([
-                            d.get("ticker", symbol),
-                            d.get("trade_date", ""),
-                            float(d.get("open", 0)),
-                            float(d.get("high", 0)),
-                            float(d.get("low", 0)),
-                            float(d.get("close", 0)),
-                            int(d.get("volume", 0)),
-                            float(d.get("amount", 0)),
-                            d.get("market", "a_share"),
-                        ])
-                    if rows:
-                        db.execute_many(
-                            """INSERT OR REPLACE INTO bars_daily
-                               (ticker, trade_date, open, high, low, close, volume, amount, market)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            rows,
-                        )
-                    results.append(f"✓ {symbol}: {len(bars)}条记录")
+                result = svc.fetch_bars([symbol], start_date, end_date, data_type, period)
+                sym_result = result.get(symbol, {})
+                if sym_result.get("status") == "ok":
+                    count = sym_result.get("count", 0)
+                    if count:
+                        results.append(f"✓ {symbol}: {count}条记录")
+                    else:
+                        results.append(f"✓ {symbol}: 财务数据已获取")
                 else:
-                    errors.append(f"✗ {symbol}: 无数据")
+                    errors.append(f"✗ {symbol}: {sym_result.get('error', '无数据')}")
             except Exception as e:
                 errors.append(f"✗ {symbol}: {str(e)[:80]}")
 
-        final_progress = 100
+            yield dash.no_update, dash.no_update, {
+                "current": i + 1, "total": total, "symbol": symbol,
+            }
+
         status_lines = results + errors
         status_el = html.Div([html.P(line) for line in status_lines[:20]])
-
         fetch_list_items = [html.Div(s) for s in symbols[:10]]
         if len(symbols) > 10:
             fetch_list_items.append(html.Small(f"...及其他 {len(symbols)-10} 个标的"))
-
-        return final_progress, "100%", status_el, html.Div(fetch_list_items)
+        return status_el, html.Div(fetch_list_items), {
+            "current": total, "total": total,
+        }
 
     @app.callback(
         Output("fetch-list", "children", allow_duplicate=True),
@@ -182,8 +135,4 @@ def register_data_callbacks(app):
         return False
 
 
-def init_schema_from_path(db_path):
-    from fisher.store.engine import DuckDBEngine
-    engine = DuckDBEngine(db_path)
-    init_schema(engine)
-    engine.close()
+
