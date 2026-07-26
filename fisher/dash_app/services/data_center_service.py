@@ -68,6 +68,7 @@ class DataCenterService:
 
     def fetch_bars(self, symbols: list[str], start: str, end: str,
                    data_type: str = "daily", period: str = "") -> dict:
+        import json
         results = {}
         for sym in symbols:
             try:
@@ -86,10 +87,32 @@ class DataCenterService:
                         self._db.execute_many(
                             "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
                         results[sym] = {"status": "ok", "count": len(rows)}
+                elif data_type == "minute":
+                    df = ak.stock_zh_a_hist_min_em(symbol=code, period=period or "1",
+                                                   start_date=start.replace("-", ""),
+                                                   end_date=end.replace("-", ""))
+                    if df is not None and not df.empty:
+                        ticker = resolve_ticker(code, "a_share")
+                        rows = []
+                        for _, r in df.iterrows():
+                            rows.append([ticker, str(r["时间"]), float(r["开盘"]),
+                                         float(r["最高"]), float(r["最低"]), float(r["收盘"]),
+                                         int(r["成交量"]), float(r["成交额"])])
+                        self._db.execute("DELETE FROM bars_minute WHERE ticker=?", [ticker])
+                        self._db.execute_many(
+                            "INSERT INTO bars_minute VALUES (?,?,?,?,?,?,?,?)", rows)
+                        results[sym] = {"status": "ok", "count": len(rows)}
                 elif data_type == "financials":
-                    fin = ak.stock_financial_abstract(symbol=code)
-                    results[sym] = {"status": "ok", "financials": True} \
-                        if fin is not None else {"status": "no_data"}
+                    df = ak.stock_financial_abstract(symbol=code)
+                    if df is not None and not df.empty:
+                        self._db.execute("CREATE TABLE IF NOT EXISTS financials "
+                                         "(ticker VARCHAR, report_date VARCHAR, data JSON)")
+                        self._db.execute("DELETE FROM financials WHERE ticker=?", [code])
+                        for _, r in df.iterrows():
+                            self._db.execute("INSERT INTO financials VALUES (?,?,?)",
+                                             [code, str(r.iloc[0])[:10],
+                                              json.dumps(r.to_dict(), ensure_ascii=False)])
+                        results[sym] = {"status": "ok", "financials": True}
             except Exception as e:
                 results[sym] = {"status": "failed", "error": str(e)[:80]}
         return results
