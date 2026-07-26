@@ -332,6 +332,7 @@ def register_data_center_callbacks(app):
             if trigger_id == "auto-load-start-btn":
                 svc.set_status("phase", "initial_load")
                 svc.set_status("current", "0")
+                svc.set_status("total", "0")  # Reset to recalculate on next poll
                 return "自动加载已启动，请查看进度..."
             else:
                 svc.set_status("phase", "idle")
