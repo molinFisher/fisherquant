@@ -261,6 +261,8 @@ def register_data_center_callbacks(app):
         Output("auto-load-progress-bar", "value"),
         Output("auto-load-progress-bar", "label"),
         Output("auto-load-progress-detail", "children"),
+        Output("auto-load-start-btn", "disabled"),
+        Output("auto-load-pause-btn", "disabled"),
         Input("auto-load-progress-poll", "n_intervals"),
     )
     def update_auto_load_progress(n):
@@ -272,13 +274,17 @@ def register_data_center_callbacks(app):
             progress = svc.get_progress()
         except Exception as e:
             logger.error("auto-load progress check failed: %s", e)
-            return "状态检查失败", 0, "0%", ""
+            return "状态检查失败", 0, "0%", "", True, True
 
         phase = progress.get("phase", "idle")
         current = int(progress.get("current", 0))
         total = int(progress.get("total", 0))
         skipped = int(progress.get("skipped", 0))
         loaded = current - skipped
+
+        is_running = phase == "initial_load"
+        start_disabled = is_running
+        pause_disabled = not is_running
 
         if phase == "initial_load" and total > 0:
             pct = int(loaded * 100 / total) if total > 0 else 0
@@ -295,24 +301,27 @@ def register_data_center_callbacks(app):
             return (
                 dbc.Badge("加载中", color="info", className="me-2"),
                 pct, f"{loaded}/{total} ({pct}%)",
-                detail,
+                detail, start_disabled, pause_disabled,
             )
         if phase == "complete" and total > 0:
             return (
                 dbc.Badge("已完成", color="success", className="me-2"),
                 100, f"{total}/{total} (100%)",
-                f"共加载 {total} 个标的，数据就绪"
+                f"共加载 {total} 个标的，数据就绪",
+                start_disabled, pause_disabled,
             )
         if phase == "error":
             return (
                 dbc.Badge("出错", color="danger", className="me-2"),
                 0, "错误",
-                progress.get("message", "加载过程发生错误")
+                progress.get("message", "加载过程发生错误"),
+                start_disabled, pause_disabled,
             )
         return (
             dbc.Badge("空闲", color="secondary", className="me-2"),
             0, "0%",
-            "自动加载未运行，请点击「开始自动加载」"
+            "自动加载未运行，请点击「开始自动加载」",
+            start_disabled, pause_disabled,
         )
 
     @app.callback(
