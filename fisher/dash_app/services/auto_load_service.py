@@ -50,7 +50,7 @@ class AutoLoadService:
             self.set_status("total", str(total))
 
         codes = self._load_index_codes()
-        for i in range(current - skipped, min(current - skipped + 5, len(codes))):
+        for i in range(current - skipped, min(current - skipped + 2, len(codes))):
             try:
                 code = codes[i]
                 is_hk = ".HK" in code
