@@ -42,16 +42,11 @@ class AutoLoadService:
         total = int(self._get("total", 0))
 
         if total == 0:
-            try:
-                df = ak.index_stock_cons(symbol="000300")
-                codes = [r["stock_code"] for _, r in df.iterrows()]
-                hk_df = ak.hk_index_cons(symbol="HSI")
-                codes += [r["stock_code"].zfill(5) for _, r in hk_df.iterrows()]
-                total = len(codes)
-                self.set_status("total", str(total))
-            except Exception as e:
-                logger.error("Failed to fetch index: %s", e)
-                return {"phase": "error", "message": str(e)[:80]}
+            codes = self._load_index_codes()
+            if not codes:
+                return {"phase": "error", "message": "无法获取成分股列表"}
+            total = len(codes)
+            self.set_status("total", str(total))
 
         codes = self._load_index_codes()
         for i in range(current, min(current + 5, len(codes))):
@@ -131,13 +126,18 @@ class AutoLoadService:
         codes = []
         try:
             df = ak.index_stock_cons(symbol="000300")
-            codes += [f"{r['stock_code']}.SH" if r["stock_code"].startswith(("6", "5", "9"))
-                      else f"{r['stock_code']}.SZ" for _, r in df.iterrows()]
+            col = df.columns[0]  # First column is always the stock code
+            codes += [f"{r[col]}.SH" if r[col].startswith(("6", "5", "9"))
+                      else f"{r[col]}.SZ" for _, r in df.iterrows()]
         except Exception as e:
             logger.warning("CSI300 fetch failed: %s", e)
         try:
-            hk_df = ak.hk_index_cons(symbol="HSI")
-            codes += [f"{r['stock_code'].zfill(5)}.HK" for _, r in hk_df.iterrows()]
+            hk_df = ak.stock_hk_spot()
+            code_col = hk_df.columns[1]  # Second column is stock code in HK spot data
+            # Filter to major HK stocks (HSI constituents approximate by top volume)
+            for _, r in hk_df.head(80).iterrows():
+                raw_code = str(r[code_col]).zfill(5)
+                codes.append(f"{raw_code}.HK")
         except Exception as e:
-            logger.warning("HSI fetch failed: %s", e)
+            logger.warning("HK stock list fetch failed: %s", e)
         return codes
