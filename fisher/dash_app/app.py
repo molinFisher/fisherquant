@@ -1,8 +1,12 @@
 import dash
 import dash_bootstrap_components as dbc
+import logging
 from diskcache import Cache
 from fisher.dash_app.layout import create_layout
 from fisher.dash_app.callbacks.routing import register_all_callbacks
+from fisher.scheduler.engine import SchedulerEngine
+
+logger = logging.getLogger(__name__)
 
 cache = Cache("./data/dash_cache")
 app = dash.Dash(
@@ -15,6 +19,34 @@ app.title = "FisherQuant"
 app._favicon = "favicon.svg"
 app.layout = create_layout()
 register_all_callbacks(app)
+
+# Scheduler for background tasks
+scheduler = SchedulerEngine()
+scheduler.start()
+
+# Startup initialization flag
+_startup_done = False
+
+
+@app.server.before_request
+def init_on_startup():
+    global _startup_done
+    if _startup_done:
+        return
+    _startup_done = True
+    try:
+        from fisher.dash_app.services import get_auto_load_service
+        svc = get_auto_load_service(scheduler)
+        result = svc.check_and_start()
+        if result.get("phase") == "initial_load":
+            scheduler.add_job("auto_load_batch", svc.initial_load,
+                              trigger="interval", seconds=30)
+        scheduler.add_job("auto_load_daily", svc.incremental_update,
+                          trigger="cron", hour=16, minute=30)
+        logger.info("Auto-load scheduler initialized (phase=%s)", result.get("phase"))
+    except Exception as e:
+        logger.error("Startup init failed: %s", e)
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
