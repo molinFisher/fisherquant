@@ -11,6 +11,8 @@ def daily_returns(nav: list[float]) -> list[float]:
 def cumulative_return(nav: list[float]) -> float:
     if len(nav) < 2:
         return 0.0
+    if nav[0] == 0:
+        return 0.0
     return (nav[-1] - nav[0]) / nav[0]
 
 

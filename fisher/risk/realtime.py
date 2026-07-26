@@ -52,16 +52,6 @@ class RealtimeRiskMonitor:
                 mdd = dd
         return mdd
 
-    def check_drawdown(self, current_nav: float) -> tuple[bool, str]:
-        if current_nav > self._peak_nav:
-            self._peak_nav = current_nav
-            return True, ""
-
-        dd = (self._peak_nav - current_nav) / self._peak_nav if self._peak_nav > 0 else 0.0
-        if dd >= self._max_drawdown:
-            return False, f"Drawdown {dd:.2%} >= {self._max_drawdown:.2%}"
-        return True, ""
-
     def _peak_nav_from_series(self, nav_series: list[float]) -> float:
         return max(nav_series) if nav_series else 0.0
 

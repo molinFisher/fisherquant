@@ -11,11 +11,26 @@ def lttb(data: list[tuple[float, float]], threshold: int = 500) -> list[tuple[fl
     Returns:
         Downsampled list of (x, y) tuples.
     """
-    if len(data) <= threshold:
-        return data
-
     data = list(data)
     data_length = len(data)
+
+    # Edge: empty input produces empty output.
+    if data_length == 0:
+        return []
+
+    # A bucketed selection needs at least 3 slots (first + at least one interior
+    # bucket + last). For very small thresholds we cannot run the algorithm;
+    # clamp to the requested point count using the endpoints.
+    if threshold < 3:
+        if threshold <= 0:
+            return []
+        if threshold == 1:
+            return [data[0]]
+        return [data[0], data[-1]]
+
+    if data_length <= threshold:
+        return data
+
     bucket_size = (data_length - 2) / (threshold - 2)
 
     result = [data[0]]
