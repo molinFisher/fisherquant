@@ -37,10 +37,14 @@ def init_on_startup():
     try:
         from fisher.dash_app.services import get_auto_load_service
         svc = get_auto_load_service(scheduler)
-        count = svc._db.query_df("SELECT COUNT(*) as c FROM bars_daily")
-        if count["c"].to_list()[0] == 0:
-            svc.set_status("phase", "initial_load")
-            svc.set_status("current", "0")
+        # 空库或表尚未创建时都应触发初始加载；count 查询异常按空库处理
+        try:
+            count = int(svc._db.query_df("SELECT COUNT(*) as c FROM bars_daily")["c"].to_list()[0])
+        except Exception:
+            count = 0
+        if count == 0:
+            svc.reset_load()
+            svc.start_background_load()
             logger.info("Auto-load triggered: empty database")
         scheduler.add_job("auto_load_daily", svc.incremental_update,
                           trigger="cron", hour=16, minute=30)

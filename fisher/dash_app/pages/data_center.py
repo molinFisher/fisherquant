@@ -268,9 +268,6 @@ def register_data_center_callbacks(app):
     def update_auto_load_progress(n):
         try:
             svc = get_auto_load_service()
-            phase = svc.get_status("phase", "idle")
-            if phase == "initial_load":
-                svc.initial_load()
             progress = svc.get_progress()
         except Exception as e:
             logger.error("auto-load progress check failed: %s", e)
@@ -353,10 +350,8 @@ def register_data_center_callbacks(app):
         try:
             svc = get_auto_load_service()
             if trigger_id == "auto-load-start-btn":
-                svc.set_status("phase", "initial_load")
-                svc.set_status("current", "0")
-                svc.set_status("total", "0")
-                svc.set_status("skipped", "0")
+                svc.reset_load()
+                svc.start_background_load()
                 return "自动加载已启动，请查看进度...", True, False
             else:
                 svc.set_status("phase", "idle")

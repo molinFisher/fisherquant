@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 import akshare as ak
 from datetime import datetime
 from ...store.engine import DuckDBManager
@@ -13,6 +15,8 @@ class AutoLoadService:
         self._db = db
         self._limiter = limiter
         self._scheduler = scheduler
+        self._running = False
+        self._codes_cache = None
         self._ensure_status_table()
 
     def _ensure_status_table(self):
@@ -37,20 +41,31 @@ class AutoLoadService:
 
         return {"phase": "idle"}
 
-    def initial_load(self) -> dict:
+    def initial_load(self, batch_size=10) -> dict:
         current = int(self._get("current", 0))
-        total = int(self._get("total", 0))
         skipped = int(self._get("skipped", 0))
+        total = int(self._get("total", 0))
 
         if total == 0:
             codes = self._load_index_codes()
             if not codes:
+                self.set_status("phase", "error")
+                self.set_status("message", "无法获取成分股列表")
                 return {"phase": "error", "message": "无法获取成分股列表"}
             total = len(codes)
             self.set_status("total", str(total))
 
-        codes = self._load_index_codes()
-        for i in range(current - skipped, min(current - skipped + 2, len(codes))):
+        if self._codes_cache is None:
+            self._codes_cache = self._load_index_codes()
+        codes = self._codes_cache
+        if not codes:
+            # 网络暂时失败：保持 initial_load，等待下次重试，不卡死
+            return {"phase": "initial_load", "current": current, "total": total}
+
+        # 游标 = 已处理数（成功 + 跳过），始终递增，避免 current-skipped 出现负数索引
+        cursor = current + skipped
+        batch_end = min(cursor + batch_size, len(codes))
+        for i in range(cursor, batch_end):
             try:
                 code = codes[i]
                 is_hk = ".HK" in code
@@ -82,9 +97,9 @@ class AutoLoadService:
                     ticker = resolve_ticker(ticker_code, "a_share")
                     exch = "sh" if ticker_code.startswith(("6","5","9")) else "sz"
                     start = AUTO_LOAD_CFG["initial_start"].replace("-", "")
-                    end = datetime.now().strftime("%Y%m%d")
+                    end_date = datetime.now().strftime("%Y%m%d")
                     df = ak.stock_zh_a_daily(symbol=f"{exch}{ticker_code}",
-                                             start_date=start, end_date=end, adjust="qfq")
+                                             start_date=start, end_date=end_date, adjust="qfq")
                     if df is not None and not df.empty:
                         for _, r in df.iterrows():
                             d = r["date"]
@@ -105,10 +120,34 @@ class AutoLoadService:
                 self.set_status("skipped", str(skipped))
                 logger.warning("Skipped %s: %s", codes[i], e)
 
-        if current >= total:
+        if current + skipped >= total:
             self.set_status("phase", "idle")
             return {"phase": "complete", "total": total}
         return {"phase": "initial_load", "current": current, "total": total}
+
+    def reset_load(self):
+        """重置自动加载状态（用于手动「开始自动加载」时从头加载）。"""
+        self._codes_cache = None
+        self.set_status("phase", "initial_load")
+        self.set_status("current", "0")
+        self.set_status("total", "0")
+        self.set_status("skipped", "0")
+
+    def start_background_load(self):
+        """在后台线程中持续推进 initial_load，避免阻塞 Dash 回调线程。"""
+        if self._running:
+            return
+        self._running = True
+        t = threading.Thread(target=self._background_loop, daemon=True)
+        t.start()
+
+    def _background_loop(self):
+        try:
+            while self.get_progress().get("phase") == "initial_load":
+                self.initial_load()
+                time.sleep(0.1)
+        finally:
+            self._running = False
 
     def incremental_update(self) -> dict:
         tickers = self._db.query_df("SELECT DISTINCT ticker FROM bars_daily")["ticker"].to_list()
