@@ -67,6 +67,8 @@ class AutoLoadService:
                                           float(r["最高"]), float(r["最低"]), float(r["收盘"]),
                                           int(r["成交量"]), float(r["成交额"]), market, 1.0])
                     logger.info("Loaded %s (%d rows)", ticker, len(df))
+                else:
+                    logger.warning("No data for %s", ticker)
                 current += 1
                 self.set_status("current", str(current))
             except Exception as e:
