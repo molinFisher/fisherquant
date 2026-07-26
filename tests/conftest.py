@@ -1,3 +1,4 @@
+import sys
 import tempfile
 from pathlib import Path
 import pytest
@@ -5,6 +6,12 @@ from fisher.store.engine import DuckDBManager
 from fisher.market.rate_limiter import RateLimiter
 from fisher.dash_app.services.data_center_service import DataCenterService
 from fisher.dash_app.services.auto_load_service import AutoLoadService
+
+# Make tests/ importable so `from helpers.dash_harness import ...` works in unit tests.
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
 
 
 @pytest.fixture

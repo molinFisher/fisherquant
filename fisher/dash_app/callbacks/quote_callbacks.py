@@ -90,13 +90,16 @@ def register_quote_callbacks(app):
         if weekday >= 5:
             return False
         hour = now.hour
-        if hour < 9 or (hour == 9 and now.minute < 15):
+        minute = now.minute
+        # 盘前：9:15 之前休市
+        if hour < 9 or (hour == 9 and minute < 15):
             return False
-        if hour >= 15 and now.minute > 1:
+        # 午休：11:30 - 13:00 休市（A 股连续交易上午 11:30 结束，下午 13:00 重开）
+        if (hour == 11 and minute >= 30) or hour == 12:
             return False
-        if hour == 11 and now.minute >= 30 and hour < 13:
-            if hour == 11 or (hour == 12 and now.minute < 60):
-                return False
+        # 收盘：15:00 之后休市
+        if hour >= 15:
+            return False
         return True
 
 
@@ -141,7 +144,7 @@ def _fetch_quote_data(symbols):
 
 
 def _build_quote_table(data):
-    import dash_table
+    from dash import dash_table
     columns = [
         {"name": "代码", "id": "code"},
         {"name": "名称", "id": "name"},
