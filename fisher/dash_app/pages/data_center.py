@@ -25,6 +25,7 @@ def create_data_center_layout():
             dcc.Store(id="fetch-progress-store"),
             dcc.Store(id="toast-trigger"),
             dcc.Interval(id="fetch-progress-poll", interval=1000),
+            dcc.Interval(id="auto-load-progress-poll", interval=5000),
             html.Div(id="data-center-content"),
             _create_financials_modal(),
         ]
@@ -198,7 +199,6 @@ def _create_auto_load_tab():
                     ),
                 ]
             ),
-            dcc.Interval(id="auto-load-progress-poll", interval=5000),
         ]
     )
 

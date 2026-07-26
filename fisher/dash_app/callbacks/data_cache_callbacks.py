@@ -23,8 +23,9 @@ def register_data_cache_callbacks(app):
         Input("cache-filter-input", "value"),
         Input("cache-refresh-btn", "n_clicks"),
         Input("cache-delete-btn", "n_clicks"),
+        Input("auto-load-progress-poll", "n_intervals"),
     )
-    def render_cached_table(active_tab, market_filter, filter_text, refresh_clicks, delete_clicks):
+    def render_cached_table(active_tab, market_filter, filter_text, refresh_clicks, delete_clicks, load_poll):
         if active_tab != "tab-cached":
             return no_update
 
