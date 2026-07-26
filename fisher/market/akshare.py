@@ -47,11 +47,39 @@ class AkshareAdapter(MarketGateway):
             df = await asyncio.to_thread(
                 ak.stock_zh_a_hist,
                 symbol=code, period="daily",
-                start_date=start, end_date=end, adjust="qfq",
+                start_date=start, end_date=end, adjust="",
             )
             return self._df_to_bars(df, ticker)
         else:
-            logger.warning("Minute bars not supported by akshare free tier")
+            # P2-12：尽力接入分钟线（akshare 免费接口不稳定，失败则降级为空并告警）
+            return await self._fetch_minute_bars(code, frequency)
+
+    async def _fetch_minute_bars(self, code: str, frequency: str) -> list:
+        period_map = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "60m": "60"}
+        period = period_map.get(frequency, "5")
+        prefix = "sh" if code.startswith(("6", "5", "9")) else "sz"
+        try:
+            df = await asyncio.to_thread(ak.stock_zh_a_minute, symbol=f"{prefix}{code}", period=period, adjust="")
+            if df is None or df.empty:
+                logger.warning("Minute bars empty for %s", code)
+                return []
+            bars = []
+            for _, row in df.iterrows():
+                trade_date = str(row.get("datetime", ""))[:10]
+                bars.append(Bar(
+                    ticker=self._normalize_ticker(code, ""),
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=int(row.get("volume", 0)),
+                    amount=float(row.get("amount", 0.0)),
+                    frequency=frequency,
+                    trade_date=trade_date,
+                ))
+            return bars
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Minute bars not available (akshare free tier): %s", e)
             return []
 
     def _parse_ticker(self, ticker: str) -> tuple[str, str]:

@@ -22,8 +22,43 @@ from fisher.analytics.performance import (
 from fisher.visualization.downsample import lttb
 from fisher.config.schemas import AssetFeeConfig
 from fisher.event.types import Bar
+from fisher.risk.factory import build_risk_engine, load_risk_config
 
 STRATEGIES_DIR = Path("strategies")
+
+# 默认滑点（万分之五），对应改进清单 P0-3
+DEFAULT_SLIPPAGE_BPS = 5.0
+
+
+def _collect_bar_rows(df) -> list[dict]:
+    """把 _load_bars 查询结果转成带 trade_date/bar_time 的行字典。
+
+    TimePlayer 依赖 trade_date 列排序与还原 bar_time；
+    BacktestEngine 依赖 trade_date 判定新交易日以执行 T+1 结算（P0-4）。
+    """
+    rows = []
+    for row in df.iter_rows():
+        td = str(row[1])[:10]
+        try:
+            ts = datetime.strptime(td, "%Y-%m-%d").timestamp()
+        except ValueError:
+            ts = 0.0
+        rows.append({
+            "ticker": row[0], "trade_date": td, "bar_time": ts,
+            "open": float(row[2]), "high": float(row[3]), "low": float(row[4]),
+            "close": float(row[5]), "volume": int(row[6] or 0),
+            "amount": float(row[7] or 0),
+            "market": row[8] if len(row) > 8 else "a_share",
+        })
+    return rows
+
+
+def _default_risk_engine():
+    """从 configs/risk.yaml 构建风险引擎（P0-5）；无配置时返回 None。"""
+    try:
+        return build_risk_engine(load_risk_config())
+    except Exception:
+        return None
 
 
 def _load_strategies():
@@ -484,10 +519,12 @@ def register_backtest_callbacks(app):
         )
 
         strategy_name = strategy_config.get("name", "unnamed")
-        paper = PaperEngine(fee_config=fee_cfg, initial_capital=initial_capital)
+        # P0-3 滑点 / P0-2 延迟成交（引擎内置）
+        paper = PaperEngine(fee_config=fee_cfg, initial_capital=initial_capital,
+                            slippage_bps=DEFAULT_SLIPPAGE_BPS)
         positions = PositionService()
 
-        all_bars = []
+        all_rows = []
         for symbol in target_symbols:
             if _CANCEL_FLAGS.get("current"):
                 return (
@@ -500,22 +537,9 @@ def register_backtest_callbacks(app):
             df = _load_bars(symbol, start_date, end_date)
             if len(df) == 0:
                 continue
-            for row in df.iter_rows():
-                all_bars.append(
-                    Bar(
-                        ticker=row[0],
-                        market=row[8] if len(row) > 8 else "a_share",
-                        open=float(row[2]),
-                        high=float(row[3]),
-                        low=float(row[4]),
-                        close=float(row[5]),
-                        volume=int(row[6] or 0),
-                        amount=float(row[7] or 0),
-                        bar_time=0.0,
-                    )
-                )
+            all_rows.extend(_collect_bar_rows(df))
 
-        if not all_bars:
+        if not all_rows:
             return (
                 100, "100%", "无有效数据",
                 html.Div("无法加载数据，请检查标的和日期范围", className="text-warning"),
@@ -524,17 +548,7 @@ def register_backtest_callbacks(app):
                 False, False,
             )
 
-        bars_pl = pl.DataFrame([{
-            "ticker": b.ticker,
-            "bar_time": float(b.bar_time),
-            "open": b.open,
-            "high": b.high,
-            "low": b.low,
-            "close": b.close,
-            "volume": b.volume,
-            "amount": b.amount,
-            "market": b.market,
-        } for b in all_bars])
+        bars_pl = pl.DataFrame(all_rows)
 
         strategy = create_strategy(strategy_config)
 
@@ -542,6 +556,8 @@ def register_backtest_callbacks(app):
             bars_df=bars_pl,
             paper_engine=paper,
             position_service=positions,
+            risk_engine=_default_risk_engine(),  # P0-5 风险预检
+            seed=42,  # P2-14 可复现
         )
 
         result = _run_async(engine.run(strategy))
@@ -675,21 +691,10 @@ def register_backtest_callbacks(app):
                 df = _load_bars(sym, start_date, end_date)
                 if len(df) == 0:
                     continue
-                for row in df.iter_rows():
-                    all_bars.append(Bar(
-                        ticker=row[0], market=row[8] if len(row) > 8 else "a_share",
-                        open=float(row[2]), high=float(row[3]), low=float(row[4]),
-                        close=float(row[5]), volume=int(row[6] or 0),
-                        amount=float(row[7] or 0), bar_time=0.0,
-                    ))
+                all_bars.extend(_collect_bar_rows(df))
             if not all_bars:
                 continue
-            bars_pl = pl.DataFrame([{
-                "ticker": b.ticker, "bar_time": float(b.bar_time),
-                "open": b.open, "high": b.high, "low": b.low,
-                "close": b.close, "volume": b.volume, "amount": b.amount,
-                "market": b.market,
-            } for b in all_bars])
+            bars_pl = pl.DataFrame(all_bars)
             strategy = create_strategy(sc)
             engine = BacktestEngine(bars_df=bars_pl, paper_engine=paper, position_service=positions)
             res = _run_async(engine.run(strategy))
@@ -803,21 +808,10 @@ def register_backtest_callbacks(app):
                 df = _load_bars(sym, w_start_str, w_end_str)
                 if len(df) == 0:
                     continue
-                for row in df.iter_rows():
-                    all_bars.append(Bar(
-                        ticker=row[0], market=row[8] if len(row) > 8 else "a_share",
-                        open=float(row[2]), high=float(row[3]), low=float(row[4]),
-                        close=float(row[5]), volume=int(row[6] or 0),
-                        amount=float(row[7] or 0), bar_time=0.0,
-                    ))
+                all_bars.extend(_collect_bar_rows(df))
             if not all_bars:
                 continue
-            bars_pl = pl.DataFrame([{
-                "ticker": b.ticker, "bar_time": float(b.bar_time),
-                "open": b.open, "high": b.high, "low": b.low,
-                "close": b.close, "volume": b.volume, "amount": b.amount,
-                "market": b.market,
-            } for b in all_bars])
+            bars_pl = pl.DataFrame(all_bars)
             strategy = create_strategy(sc)
             engine = BacktestEngine(bars_df=bars_pl, paper_engine=paper, position_service=positions)
             res = _run_async(engine.run(strategy))
@@ -950,22 +944,11 @@ def register_backtest_callbacks(app):
                         df = _load_bars(sym, start_date, end_date)
                         if len(df) == 0:
                             continue
-                        for row in df.iter_rows():
-                            all_bars.append(Bar(
-                                ticker=row[0], market=row[8] if len(row) > 8 else "a_share",
-                                open=float(row[2]), high=float(row[3]), low=float(row[4]),
-                                close=float(row[5]), volume=int(row[6] or 0),
-                                amount=float(row[7] or 0), bar_time=0.0,
-                            ))
+                        all_bars.extend(_collect_bar_rows(df))
                     if not all_bars:
                         row_result.append(None)
                         continue
-                    bars_pl = pl.DataFrame([{
-                        "ticker": b.ticker, "bar_time": float(b.bar_time),
-                        "open": b.open, "high": b.high, "low": b.low,
-                        "close": b.close, "volume": b.volume, "amount": b.amount,
-                        "market": b.market,
-                    } for b in all_bars])
+                    bars_pl = pl.DataFrame(all_bars)
                     strategy = create_strategy(sc)
                     engine = BacktestEngine(bars_df=bars_pl, paper_engine=paper, position_service=positions)
                     res = _run_async(engine.run(strategy))
@@ -981,22 +964,11 @@ def register_backtest_callbacks(app):
                     df = _load_bars(sym, start_date, end_date)
                     if len(df) == 0:
                         continue
-                    for row in df.iter_rows():
-                        all_bars.append(Bar(
-                            ticker=row[0], market=row[8] if len(row) > 8 else "a_share",
-                            open=float(row[2]), high=float(row[3]), low=float(row[4]),
-                            close=float(row[5]), volume=int(row[6] or 0),
-                            amount=float(row[7] or 0), bar_time=0.0,
-                        ))
+                    all_bars.extend(_collect_bar_rows(df))
                 if not all_bars:
                     results.append(None)
                     continue
-                bars_pl = pl.DataFrame([{
-                    "ticker": b.ticker, "bar_time": float(b.bar_time),
-                    "open": b.open, "high": b.high, "low": b.low,
-                    "close": b.close, "volume": b.volume, "amount": b.amount,
-                    "market": b.market,
-                } for b in all_bars])
+                bars_pl = pl.DataFrame(all_bars)
                 strategy = create_strategy(sc)
                 engine = BacktestEngine(bars_df=bars_pl, paper_engine=paper, position_service=positions)
                 res = _run_async(engine.run(strategy))
@@ -1154,22 +1126,11 @@ def register_backtest_callbacks(app):
             df = _load_bars(sym, start_date, end_date)
             if len(df) == 0:
                 continue
-            for row in df.iter_rows():
-                all_bars.append(Bar(
-                    ticker=row[0], market=row[8] if len(row) > 8 else "a_share",
-                    open=float(row[2]), high=float(row[3]), low=float(row[4]),
-                    close=float(row[5]), volume=int(row[6] or 0),
-                    amount=float(row[7] or 0), bar_time=0.0,
-                ))
+            all_bars.extend(_collect_bar_rows(df))
         if not all_bars:
             return html.Div("无有效数据", className="text-warning")
 
-        bars_pl = pl.DataFrame([{
-            "ticker": b.ticker, "bar_time": float(b.bar_time),
-            "open": b.open, "high": b.high, "low": b.low,
-            "close": b.close, "volume": b.volume, "amount": b.amount,
-            "market": b.market,
-        } for b in all_bars])
+        bars_pl = pl.DataFrame(all_bars)
         strategy = create_strategy(sc)
         engine = BacktestEngine(bars_df=bars_pl, paper_engine=paper, position_service=positions)
         res = _run_async(engine.run(strategy))

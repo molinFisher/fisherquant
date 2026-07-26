@@ -3,10 +3,11 @@ from ..oms.orders import Order
 
 
 class PositionService:
-    def __init__(self, hkd_cny_rate: float = 0.92):
+    def __init__(self, hkd_cny_rate: float = 0.92, allow_short: bool = False):
         self._positions: dict[str, dict] = {}
         self._hkd_cny_rate = hkd_cny_rate
         self._t1_pending: dict[str, list[tuple[int, str]]] = {}
+        self._allow_short = allow_short
 
     def update_on_fill(self, order: Order, fill_price: float) -> None:
         ticker = order.ticker
@@ -29,29 +30,47 @@ class PositionService:
             }
 
         pos = self._positions[ticker]
+        old_qty = pos["quantity"]
+        old_cost = pos["avg_cost"]
+        sign = 1 if is_buy else -1
 
-        if is_buy:
-            total_qty = pos["quantity"] + order.filled_qty
-            total_cost = pos["avg_cost"] * pos["quantity"] + trade_value + commission
-            pos["quantity"] = total_qty
-            pos["avg_cost"] = round(total_cost / total_qty, 4) if total_qty > 0 else 0.0
+        # P1-8：不允许做空时，卖出超过持仓则截断为仅平多
+        if not self._allow_short and old_qty >= 0 and sign < 0 and order.filled_qty > old_qty:
+            effective_qty = old_qty
         else:
-            pos["quantity"] -= order.filled_qty
-            if pos["quantity"] < 0:
-                raise ValueError(
-                    f"Cannot sell {order.filled_qty} shares of {ticker}: "
-                    f"only {pos['quantity'] + order.filled_qty} shares held"
-                )
-            if pos["quantity"] <= 0:
-                # Remove position entry when holdings reach zero
-                self._positions.pop(ticker)
-                self._t1_pending.pop(ticker, None)
-                return
+            effective_qty = order.filled_qty
 
-        if self._market_t_plus(order.market) > 0 and is_buy:
+        new_qty = old_qty + sign * effective_qty
+
+        if new_qty < 0 and not self._allow_short:
+            raise ValueError(
+                f"Cannot sell {order.filled_qty} shares of {ticker}: "
+                f"only {old_qty} shares held (short selling disabled)"
+            )
+
+        if new_qty == 0:
+            pos["quantity"] = 0
+            pos["avg_cost"] = 0.0
+        elif (old_qty >= 0 and sign > 0) or (old_qty <= 0 and sign < 0):
+            base = old_cost * abs(old_qty) + fill_price * effective_qty
+            pos["avg_cost"] = round(base / abs(new_qty), 4) if new_qty != 0 else 0.0
+            pos["quantity"] = new_qty
+        else:
+            # 反方向（平仓 / 反手）
+            pos["quantity"] = new_qty
+            if abs(sign * effective_qty) > abs(old_qty):
+                pos["avg_cost"] = round(fill_price, 4)
+
+        if pos["quantity"] == 0:
+            self._positions.pop(ticker, None)
+            self._t1_pending.pop(ticker, None)
+            return
+
+        # T+1 冻结仅对 A 股多头买入生效；空头不受 T+1 限制
+        if self._market_t_plus(order.market) > 0 and is_buy and new_qty > 0:
             if ticker not in self._t1_pending:
                 self._t1_pending[ticker] = []
-            self._t1_pending[ticker].append((order.filled_qty, "buy"))
+            self._t1_pending[ticker].append((effective_qty, "buy"))
 
         self._update_cost_cny(ticker)
         self._update_available(ticker)

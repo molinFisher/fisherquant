@@ -75,7 +75,7 @@ class DataCenterService:
                 code = sym.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
                 if data_type == "daily":
                     df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                                            start_date=start, end_date=end, adjust="qfq")
+                                            start_date=start, end_date=end, adjust="")
                     if df is not None and not df.empty:
                         ticker = resolve_ticker(code, "a_share")
                         rows = []

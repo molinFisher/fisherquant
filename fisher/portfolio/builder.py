@@ -47,7 +47,9 @@ class PortfolioBuilder:
                     net_qty = sell_qty - buy_qty
                     net_side = OrderSide.SELL
                 all_qtys = [s.quantity for s in sigs]
-                avg_confidence = sum(s.confidence * s.quantity for s in sigs) / sum(all_qtys) if all_qtys else 0.0
+                sum_qty = sum(all_qtys) if all_qtys else 0.0
+                avg_confidence = sum(s.confidence * s.quantity for s in sigs) / sum_qty if sum_qty else 0.0
+                avg_price = sum(s.limit_price * s.quantity for s in sigs) / sum_qty if sum_qty else 0.0
                 dominant = max(sigs, key=lambda s: s.confidence)
                 merged[ticker] = {
                     "ticker": ticker,
@@ -55,6 +57,7 @@ class PortfolioBuilder:
                     "side": net_side,
                     "quantity": max(net_qty, 0),
                     "confidence": avg_confidence,
+                    "price": avg_price,
                 }
             elif self.conflict_mode == "first_wins":
                 s = sigs[0]
@@ -64,6 +67,7 @@ class PortfolioBuilder:
                     "side": s.side,
                     "quantity": s.quantity,
                     "confidence": s.confidence,
+                    "price": s.limit_price,
                 }
             else:
                 s = sigs[0]
@@ -73,6 +77,7 @@ class PortfolioBuilder:
                     "side": s.side,
                     "quantity": s.quantity,
                     "confidence": s.confidence,
+                    "price": s.limit_price,
                 }
         return merged
 
@@ -92,13 +97,31 @@ class PortfolioBuilder:
             if allocation <= 0:
                 continue
             info = merged.get(ticker, {})
+            # P1-10：权重与下单挂钩——
+            # 策略显式给出数量时尊重信号数量（但不超过该标的的权重分配额）；
+            # 信号未指定数量（qty<=0）时由 权重分配额/价格 推导数量。
+            price = info.get("price") or 0.0
+            sig_qty = int(info.get("quantity") or 0)
+            if sig_qty > 0:
+                quantity = sig_qty
+                if price > 0:
+                    max_qty = int(allocation / price)
+                    # 卖出（平仓/做空）不受买入资金分配额约束
+                    if info.get("side") == OrderSide.BUY and max_qty > 0:
+                        quantity = min(quantity, max_qty) or sig_qty
+            elif price > 0:
+                quantity = max(1, int(allocation / price))
+            else:
+                quantity = 0
+            if quantity <= 0:
+                continue
             orders.append(
                 OrderPending(
                     ticker=ticker,
                     market=info.get("market", "a_share"),
                     side=info.get("side", OrderSide.BUY),
-                    quantity=info.get("quantity", 0),
-                    price=allocation,
+                    quantity=quantity,
+                    price=price,
                     order_type="limit",
                     status=OrderStatus.PENDING,
                 )

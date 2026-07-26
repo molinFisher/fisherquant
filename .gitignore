@@ -15,3 +15,4 @@ htmlcov/
 data/dash_cache/
 # runtime db artifacts (force-added by mistake, never commit)
 *.corrupt*
+data/

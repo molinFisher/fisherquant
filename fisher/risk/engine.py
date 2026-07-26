@@ -23,3 +23,15 @@ class RiskEngine:
 
     def add_rule(self, rule: PreTradeRule) -> None:
         self._rules.append(rule)
+
+    def record_pnl(self, pnl: float) -> None:
+        """回测每根 bar 调用，累积日内盈亏（驱动 DailyLossLimit 等规则）。"""
+        for rule in self._rules:
+            if hasattr(rule, "record_pnl"):
+                rule.record_pnl(pnl)
+
+    def reset_daily(self) -> None:
+        """新交易日重置日内累计（如 DailyLossLimit）。"""
+        for rule in self._rules:
+            if hasattr(rule, "reset_daily_pnl"):
+                rule.reset_daily_pnl()

@@ -99,7 +99,7 @@ class AutoLoadService:
                     start = AUTO_LOAD_CFG["initial_start"].replace("-", "")
                     end_date = datetime.now().strftime("%Y%m%d")
                     df = ak.stock_zh_a_daily(symbol=f"{exch}{ticker_code}",
-                                             start_date=start, end_date=end_date, adjust="qfq")
+                                             start_date=start, end_date=end_date, adjust="")
                     if df is not None and not df.empty:
                         for _, r in df.iterrows():
                             d = r["date"]
@@ -161,7 +161,7 @@ class AutoLoadService:
                 df = ak.stock_zh_a_hist(symbol=code, period="daily",
                                         start_date=str(last_date),
                                         end_date=datetime.now().strftime("%Y-%m-%d"),
-                                        adjust="qfq")
+                                        adjust="")
                 if df is not None and len(df) > 1:
                     for _, r in df.iloc[1:].iterrows():
                         self._db.execute("INSERT OR REPLACE INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
