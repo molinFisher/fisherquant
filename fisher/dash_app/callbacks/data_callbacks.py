@@ -26,6 +26,8 @@ def _run_async(coro):
 
 
 def register_data_callbacks(app):
+    from fisher.dash_app.services import get_data_service
+
     @app.callback(
         Output("symbol-search-results", "options"),
         Output("symbol-search-results", "value"),
@@ -38,28 +40,10 @@ def register_data_callbacks(app):
             return [], None, ""
 
         try:
-            import akshare as ak
-            limiter = get_global_limiter()
-            limiter.acquire()
-            result_df = ak.stock_info_a_code_name()
-            if result_df is None or len(result_df) == 0:
-                return [], None, "未找到结果"
-
-            q = query.strip().upper()
-            matches = []
-            for _, row in result_df.iterrows():
-                code = str(row.get("code", ""))
-                name = str(row.get("name", ""))
-                if q in code or q.lower() in name.lower():
-                    matches.append({
-                        "label": f"{code} - {name}",
-                        "value": resolve_ticker(code, "a_share"),
-                    })
-
+            svc = get_data_service()
+            matches = svc.search_symbols(query.strip())
             if not matches:
                 return [], None, "未找到结果"
-
-            matches = matches[:20]
             return matches, None, f"找到 {len(matches)} 个结果"
         except Exception as e:
             return [], None, f"搜索异常: {str(e)}"
