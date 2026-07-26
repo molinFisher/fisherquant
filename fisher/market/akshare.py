@@ -6,6 +6,7 @@ import akshare as ak
 from .gateway import MarketGateway
 from .model import Bar
 from .rate_limiter import get_global_limiter, retry_with_backoff
+from .ticker import resolve_ticker
 from ..config.schemas import MarketConfig
 
 logger = logging.getLogger(__name__)
@@ -59,33 +60,9 @@ class AkshareAdapter(MarketGateway):
             return parts[0], parts[1].lower()
         return ticker, ""
 
-    _NORMALIZE_PREFIX_MAP: dict[str, str] = {
-        "000": "SZ", "001": "SZ", "002": "SZ", "003": "SZ",
-        "600": "SH", "601": "SH", "603": "SH", "605": "SH",
-        "688": "SH",
-        "300": "SZ", "301": "SZ",
-        "200": "SZ",  # B-share SZ
-        "900": "SH",  # B-share SH
-        "400": "BJ", "430": "BJ",
-        "830": "BJ", "831": "BJ", "832": "BJ", "833": "BJ", "834": "BJ",
-        "835": "BJ", "836": "BJ", "837": "BJ", "838": "BJ", "839": "BJ",
-        "870": "BJ", "871": "BJ", "872": "BJ", "873": "BJ",
-    }
-
     def _normalize_ticker(self, code: str, market: str) -> str:
-        if market == "a_share":
-            for prefix, exchange in self._NORMALIZE_PREFIX_MAP.items():
-                if code.startswith(prefix):
-                    return f"{code}.{exchange}"
-            if code.startswith("5"):
-                return f"{code}.SH"
-            if code.startswith(("0", "2", "3", "4", "8")):
-                return f"{code}.SZ"
-            return f"{code}.SZ"
-        elif market == "hk_connect":
-            code_fixed = code.zfill(5)
-            return f"{code_fixed}.HK"
-        return f"{code}.UNKNOWN"
+        # 统一走幂等 resolve_ticker，避免双后缀 / .UNKNOWN 脏数据
+        return resolve_ticker(code, market)
 
     def _df_to_bars(self, df, ticker: str) -> list[Bar]:
         if df is None or df.empty:

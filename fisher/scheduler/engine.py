@@ -23,12 +23,16 @@ class SchedulerEngine:
         except ImportError:
             logger.warning("sqlalchemy not installed, using default memory jobstore")
 
-        self._scheduler = BackgroundScheduler(
-            jobstores=jobstores,
-            executors={"default": ThreadPoolExecutor(max_workers=4)},
-            job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 300},
-            timezone="Asia/Shanghai",
-        )
+        scheduler_kwargs = {
+            "executors": {"default": ThreadPoolExecutor(max_workers=4)},
+            "job_defaults": {"coalesce": True, "max_instances": 1, "misfire_grace_time": 300},
+            "timezone": "Asia/Shanghai",
+        }
+        # 仅在可用时传入 SQLAlchemy jobstore；否则不传 jobstores，
+        # 由 apscheduler 自动创建默认内存 jobstore（避免 jobstores=None 触发崩溃）
+        if jobstores is not None:
+            scheduler_kwargs["jobstores"] = jobstores
+        self._scheduler = BackgroundScheduler(**scheduler_kwargs)
         self._jobs: dict[str, dict] = {}
         self._hooks: dict[str, list[MarketHook]] = defaultdict(list)
 

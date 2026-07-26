@@ -1,4 +1,5 @@
 import copy
+import logging
 import os
 import re
 from pathlib import Path
@@ -9,6 +10,9 @@ from .schemas import AppConfig
 
 class ConfigLoadError(Exception):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
@@ -69,3 +73,26 @@ class ConfigLoader:
             )
         except ValidationError as e:
             raise ConfigLoadError(f"Config validation failed: {e}")
+
+    @staticmethod
+    def safe_load(config_dir: str) -> tuple[AppConfig, list[str]]:
+        """加载配置；遇到损坏/非法配置时回退默认配置并产出告警（PRD §16.14）。
+
+        返回 (config, warnings)：
+        - 正常：返回解析后的 AppConfig，warnings 为空。
+        - 损坏/校验失败：记录告警并返回 AppConfig() 默认配置，不向外抛异常，
+          保证看板/服务在配置损坏时仍可启动。
+        """
+        warnings: list[str] = []
+        try:
+            return ConfigLoader.load(config_dir), warnings
+        except ConfigLoadError as e:
+            msg = f"配置加载失败，已回退默认配置: {e}"
+            warnings.append(msg)
+            logger.warning(msg)
+            return AppConfig(), warnings
+        except Exception as e:  # 兜底：任何意外错误都不应阻断启动
+            msg = f"配置加载发生未知错误，已回退默认配置: {e}"
+            warnings.append(msg)
+            logger.warning(msg)
+            return AppConfig(), warnings

@@ -1,5 +1,8 @@
+import logging
 import polars as pl
 from .engine import DuckDBEngine
+
+logger = logging.getLogger(__name__)
 
 
 class BarRepo:
@@ -33,6 +36,33 @@ class BarRepo:
                 ORDER BY ticker, trade_date""",
             [*tickers, start, end],
         )
+
+    # 所有按 ticker 隔离的表，删除标的时统一级联清理（对应 PRD TC-CONS-008）
+    TICKER_TABLES: tuple[str, ...] = (
+        "bars_daily", "bars_minute", "corporate_actions",
+        "positions", "snapshots",
+    )
+
+    @staticmethod
+    def delete_symbols(engine: DuckDBEngine, tickers: list[str]) -> int:
+        """级联删除若干标的的全部关联数据，返回成功删除的标的数。
+
+        每个标的在一个事务内删除其在所有 ticker 维度表（日线/分钟/复权/持仓/快照）
+        中的记录；单个标的失败不影响其余标的。tickers 为空时直接返回 0。
+        """
+        if not tickers:
+            return 0
+        deleted = 0
+        for t in tickers:
+            try:
+                with engine.transaction() as conn:
+                    for tbl in BarRepo.TICKER_TABLES:
+                        conn.execute(f"DELETE FROM {tbl} WHERE ticker = ?", [t])
+                deleted += 1
+            except Exception as e:
+                logger.warning("级联删除标的 %s 失败: %s", t, e)
+                continue
+        return deleted
 
 
 class PositionRepo:

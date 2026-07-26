@@ -124,6 +124,9 @@ class AutoLoadService:
         row = self._db.query_df("SELECT value FROM auto_load_status WHERE key=?", [key])
         return row["value"].to_list()[0] if len(row) > 0 else str(default)
 
+    def _set(self, key: str, value: str):
+        self.set_status(key, value)
+
     def _load_index_codes(self) -> list[str]:
         codes = []
         try:
