@@ -257,14 +257,13 @@ def register_data_center_callbacks(app):
     from fisher.dash_app.services import get_auto_load_service
 
     @app.callback(
-        Output("auto-load-progress-status", "children", allow_duplicate=True),
-        Output("auto-load-progress-bar", "value", allow_duplicate=True),
-        Output("auto-load-progress-bar", "label", allow_duplicate=True),
-        Output("auto-load-progress-detail", "children", allow_duplicate=True),
-        Output("auto-load-start-btn", "disabled", allow_duplicate=True),
-        Output("auto-load-pause-btn", "disabled", allow_duplicate=True),
+        Output("auto-load-progress-status", "children"),
+        Output("auto-load-progress-bar", "value"),
+        Output("auto-load-progress-bar", "label"),
+        Output("auto-load-progress-detail", "children"),
+        Output("auto-load-start-btn", "disabled"),
+        Output("auto-load-pause-btn", "disabled"),
         Input("auto-load-progress-poll", "n_intervals"),
-        prevent_initial_call=True,
     )
     def update_auto_load_progress(n):
         try:
@@ -341,12 +340,12 @@ def register_data_center_callbacks(app):
 
     @app.callback(
         Output("auto-load-action-feedback", "children"),
-        Output("auto-load-progress-status", "children"),
-        Output("auto-load-progress-bar", "value"),
-        Output("auto-load-progress-bar", "label"),
-        Output("auto-load-progress-detail", "children"),
-        Output("auto-load-start-btn", "disabled"),
-        Output("auto-load-pause-btn", "disabled"),
+        Output("auto-load-progress-status", "children", allow_duplicate=True),
+        Output("auto-load-progress-bar", "value", allow_duplicate=True),
+        Output("auto-load-progress-bar", "label", allow_duplicate=True),
+        Output("auto-load-progress-detail", "children", allow_duplicate=True),
+        Output("auto-load-start-btn", "disabled", allow_duplicate=True),
+        Output("auto-load-pause-btn", "disabled", allow_duplicate=True),
         Input("auto-load-start-btn", "n_clicks"),
         Input("auto-load-pause-btn", "n_clicks"),
         prevent_initial_call=True,
