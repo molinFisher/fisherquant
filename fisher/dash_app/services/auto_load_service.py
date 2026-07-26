@@ -113,8 +113,12 @@ class AutoLoadService:
         return {"phase": self._get("phase", "idle"), "current": int(self._get("current", 0)),
                 "total": int(self._get("total", 0)), "last_run": self._get("last_run", "")}
 
-    def _set(self, key: str, value: str):
+    def set_status(self, key: str, value: str):
         self._db.execute("INSERT OR REPLACE INTO auto_load_status VALUES (?,?)", [key, value])
+
+    def get_status(self, key: str, default="0") -> str:
+        row = self._db.query_df("SELECT value FROM auto_load_status WHERE key=?", [key])
+        return row["value"].to_list()[0] if len(row) > 0 else str(default)
 
     def _get(self, key: str, default="0") -> str:
         row = self._db.query_df("SELECT value FROM auto_load_status WHERE key=?", [key])

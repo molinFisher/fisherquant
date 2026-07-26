@@ -1,5 +1,5 @@
 import dash_bootstrap_components as dbc
-from dash import html, dcc, dash_table, Input, Output, callback, no_update
+from dash import html, dcc, dash_table, Input, Output, callback, no_update, ctx
 import logging
 
 logger = logging.getLogger(__name__)
@@ -264,6 +264,10 @@ def register_data_center_callbacks(app):
     def update_auto_load_progress(n):
         try:
             svc = get_auto_load_service()
+            phase = svc.get_status("phase", "idle")
+            # If loading in progress, process next batch in the poll callback
+            if phase == "initial_load":
+                result = svc.initial_load()
             progress = svc.get_progress()
         except Exception as e:
             logger.error("auto-load progress check failed: %s", e)
@@ -305,17 +309,18 @@ def register_data_center_callbacks(app):
         prevent_initial_call=True,
     )
     def handle_auto_load_action(start_clicks, pause_clicks):
-        ctx = callback.context
         if not ctx.triggered:
             return no_update
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
         try:
             svc = get_auto_load_service()
             if trigger_id == "auto-load-start-btn":
-                result = svc.check_and_start()
-                return f"操作: {result.get('phase', 'started')}"
+                svc.set_status("phase", "initial_load")
+                svc.set_status("current", "0")
+                return "自动加载已启动，请查看进度..."
             else:
-                return "暂停功能需要APScheduler支持"
+                svc.set_status("phase", "idle")
+                return "自动加载已暂停"
         except Exception as e:
             logger.error("auto-load action failed: %s", e)
             return f"操作失败: {e}"
