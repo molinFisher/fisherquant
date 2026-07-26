@@ -15,33 +15,56 @@ class DataCenterService:
     def search_symbols(self, query: str) -> list[dict]:
         if not query or len(query) < 2:
             return []
+        results = []
+
+        # 1. Search A-share cache
         try:
             cached = self._db.query_df(
                 "SELECT code, name FROM symbol_cache WHERE code LIKE ? OR name LIKE ? LIMIT 20",
                 [f"%{query}%", f"%{query}%"],
             )
             if len(cached) > 0:
-                return [
-                    {"label": f"{r['code']} - {r['name']}", "value": r["code"]}
+                results.extend([
+                    {"label": f"{r['code']} - {r['name']}", "value": f"{r['code']}"}
                     for r in cached.to_dicts()
-                ]
+                ])
         except Exception as e:
-            logger.debug("Symbol cache lookup failed: %s", e)
+            logger.debug("A-share cache lookup failed: %s", e)
 
+        # 2. Fetch A-share list and cache it (runs once)
+        if not results:
+            try:
+                df = ak.stock_info_a_code_name()
+                self._db.execute("CREATE TABLE IF NOT EXISTS symbol_cache (code VARCHAR PRIMARY KEY, name VARCHAR)")
+                for _, r in df.iterrows():
+                    self._db.execute("INSERT OR REPLACE INTO symbol_cache VALUES (?,?)",
+                                     [r["code"], r["name"]])
+                filtered = df[df["code"].str.contains(query) | df["name"].str.contains(query, na=False)]
+                results.extend([
+                    {"label": f"{r['code']} - {r['name']}", "value": f"{r['code']}"}
+                    for _, r in filtered.head(20).iterrows()
+                ])
+            except Exception as e:
+                logger.error("A-share search failed: %s", e)
+
+        # 3. Search HK stocks
         try:
-            df = ak.stock_info_a_code_name()
-            self._db.execute("CREATE TABLE IF NOT EXISTS symbol_cache (code VARCHAR PRIMARY KEY, name VARCHAR)")
-            for _, r in df.iterrows():
-                self._db.execute("INSERT OR REPLACE INTO symbol_cache VALUES (?,?)",
-                                 [r["code"], r["name"]])
-            filtered = df[df["code"].str.contains(query) | df["name"].str.contains(query, na=False)]
-            return [
-                {"label": f"{r['code']} - {r['name']}", "value": r["code"]}
-                for _, r in filtered.head(20).iterrows()
-            ]
+            hk_df = ak.stock_hk_spot()
+            if "名称" in hk_df.columns and "代码" in hk_df.columns:
+                hk_filtered = hk_df[
+                    hk_df["代码"].astype(str).str.contains(query) |
+                    hk_df["名称"].str.contains(query, na=False)
+                ]
+                for _, r in hk_filtered.head(10).iterrows():
+                    hk_code = f"{int(r['代码']):05d}.HK"
+                    label = f"{hk_code} - {r['名称']}"
+                    # Avoid duplicates
+                    if not any(label == x["label"] for x in results):
+                        results.append({"label": label, "value": hk_code})
         except Exception as e:
-            logger.error("Search failed: %s", e)
-            return []
+            logger.debug("HK search failed: %s", e)
+
+        return results[:20]
 
     def fetch_bars(self, symbols: list[str], start: str, end: str,
                    data_type: str = "daily", period: str = "") -> dict:

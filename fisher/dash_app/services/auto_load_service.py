@@ -28,7 +28,7 @@ class AutoLoadService:
         if phase == "fresh":
             count = self._db.query_df("SELECT COUNT(*) as c FROM bars_daily")
             if count["c"][0] == 0:
-                self._set("phase", "initial_load")
+                self.set_status("phase", "initial_load")
                 return self.initial_load()
             return {"phase": "idle", "message": "data_exists"}
 
@@ -48,7 +48,7 @@ class AutoLoadService:
                 hk_df = ak.hk_index_cons(symbol="HSI")
                 codes += [r["stock_code"].zfill(5) for _, r in hk_df.iterrows()]
                 total = len(codes)
-                self._set("total", str(total))
+                self.set_status("total", str(total))
             except Exception as e:
                 logger.error("Failed to fetch index: %s", e)
                 return {"phase": "error", "message": str(e)[:80]}
@@ -73,14 +73,14 @@ class AutoLoadService:
                                           int(r["成交量"]), float(r["成交额"]), market, 1.0])
                     logger.info("Loaded %s (%d rows)", ticker, len(df))
                 current += 1
-                self._set("current", str(current))
+                self.set_status("current", str(current))
             except Exception as e:
                 current += 1
-                self._set("current", str(current))
+                self.set_status("current", str(current))
                 logger.warning("Skipped %s: %s", codes[i], e)
 
         if current >= total:
-            self._set("phase", "idle")
+            self.set_status("phase", "idle")
             return {"phase": "complete", "total": total}
         return {"phase": "initial_load", "current": current, "total": total}
 
@@ -106,7 +106,7 @@ class AutoLoadService:
                 processed += 1
             except Exception as e:
                 logger.warning("Incremental update failed %s: %s", t, e)
-        self._set("last_run", datetime.now().isoformat())
+        self.set_status("last_run", datetime.now().isoformat())
         return {"phase": "incremental", "processed": processed}
 
     def get_progress(self) -> dict:
