@@ -25,7 +25,7 @@ def create_data_center_layout():
             dcc.Store(id="fetch-progress-store"),
             dcc.Store(id="toast-trigger"),
             dcc.Interval(id="fetch-progress-poll", interval=1000),
-            dcc.Interval(id="auto-load-progress-poll", interval=5000),
+            dcc.Interval(id="auto-load-progress-poll", interval=3000),
             html.Div(id="data-center-content"),
             _create_financials_modal(),
         ]
