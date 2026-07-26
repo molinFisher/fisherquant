@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 from ...store.engine import DuckDBManager
+from ...store.schema import init_schema
 from ...market.rate_limiter import RateLimiter, get_global_limiter
 
 logger = logging.getLogger(__name__)
@@ -19,8 +20,16 @@ def get_db() -> DuckDBManager:
         db_path = str(Path("./data/fisherquant.db").resolve())
         try:
             _db_instance.connect(db_path, read_pool_size=4)
+            init_schema(_db_instance)
         except Exception as e:
             logger.error("Failed to connect DB: %s", e)
+    elif not hasattr(_db_instance, '_write_conn') or _db_instance._write_conn is None:
+        db_path = str(Path("./data/fisherquant.db").resolve())
+        try:
+            _db_instance.connect(db_path, read_pool_size=4)
+            init_schema(_db_instance)
+        except Exception as e:
+            logger.error("Failed to reconnect DB: %s", e)
     return _db_instance
 
 

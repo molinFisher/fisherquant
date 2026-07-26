@@ -1,5 +1,5 @@
 import dash_bootstrap_components as dbc
-from dash import html, dcc, dash_table, Input, Output, callback, no_update, ctx
+from dash import html, dcc, dash_table, Input, Output, State, callback, no_update, ctx
 import logging
 
 logger = logging.getLogger(__name__)
