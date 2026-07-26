@@ -257,13 +257,14 @@ def register_data_center_callbacks(app):
     from fisher.dash_app.services import get_auto_load_service
 
     @app.callback(
-        Output("auto-load-progress-status", "children"),
-        Output("auto-load-progress-bar", "value"),
-        Output("auto-load-progress-bar", "label"),
-        Output("auto-load-progress-detail", "children"),
-        Output("auto-load-start-btn", "disabled"),
-        Output("auto-load-pause-btn", "disabled"),
+        Output("auto-load-progress-status", "children", allow_duplicate=True),
+        Output("auto-load-progress-bar", "value", allow_duplicate=True),
+        Output("auto-load-progress-bar", "label", allow_duplicate=True),
+        Output("auto-load-progress-detail", "children", allow_duplicate=True),
+        Output("auto-load-start-btn", "disabled", allow_duplicate=True),
+        Output("auto-load-pause-btn", "disabled", allow_duplicate=True),
         Input("auto-load-progress-poll", "n_intervals"),
+        prevent_initial_call=True,
     )
     def update_auto_load_progress(n):
         try:
@@ -340,6 +341,12 @@ def register_data_center_callbacks(app):
 
     @app.callback(
         Output("auto-load-action-feedback", "children"),
+        Output("auto-load-progress-status", "children"),
+        Output("auto-load-progress-bar", "value"),
+        Output("auto-load-progress-bar", "label"),
+        Output("auto-load-progress-detail", "children"),
+        Output("auto-load-start-btn", "disabled"),
+        Output("auto-load-pause-btn", "disabled"),
         Input("auto-load-start-btn", "n_clicks"),
         Input("auto-load-pause-btn", "n_clicks"),
         prevent_initial_call=True,
@@ -353,14 +360,30 @@ def register_data_center_callbacks(app):
             if trigger_id == "auto-load-start-btn":
                 svc.set_status("phase", "initial_load")
                 svc.set_status("current", "0")
-                svc.set_status("total", "0")  # Reset to recalculate on next poll
-                return "自动加载已启动，请查看进度..."
+                svc.set_status("total", "0")
+                # Trigger first batch immediately
+                try:
+                    svc.initial_load()
+                except Exception as e:
+                    logger.warning("First auto-load batch error: %s", e)
+                progress = svc.get_progress()
+                phase = progress.get("phase", "initial_load")
+                current = int(progress.get("current", 0))
+                total = int(progress.get("total", 0))
+                skipped = int(progress.get("skipped", 0))
+                loaded = current - skipped
+                if total > 0:
+                    pct = int(loaded * 100 / total) if total > 0 else 0
+                    detail = f"已加载 {loaded}/{total}" + (f"，跳过 {skipped}" if skipped else "")
+                    badge = dbc.Badge("加载中", color="info", className="me-2")
+                    return "自动加载已启动", badge, pct, f"{loaded}/{total} ({pct}%)", detail, True, False
+                return "自动加载已启动，数据获取中...", dbc.Badge("加载中", color="info", className="me-2"), 0, "0%", "正在获取成分股列表...", True, False
             else:
                 svc.set_status("phase", "idle")
-                return "自动加载已暂停"
+                return "自动加载已暂停", dbc.Badge("空闲", color="secondary", className="me-2"), 0, "0%", "已暂停", False, True
         except Exception as e:
             logger.error("auto-load action failed: %s", e)
-            return f"操作失败: {e}"
+            return f"操作失败: {e}", dbc.Badge("出错", color="danger", className="me-2"), 0, "0%", str(e)[:50], False, False
 
 
 def _create_advanced_tab():
