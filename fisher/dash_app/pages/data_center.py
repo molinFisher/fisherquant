@@ -266,6 +266,9 @@ def register_data_center_callbacks(app):
     def update_auto_load_progress(n):
         try:
             svc = get_auto_load_service()
+            phase = svc.get_status("phase", "idle")
+            if phase == "initial_load":
+                svc.initial_load()
             progress = svc.get_progress()
         except Exception as e:
             logger.error("auto-load progress check failed: %s", e)

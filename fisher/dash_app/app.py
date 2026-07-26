@@ -37,13 +37,13 @@ def init_on_startup():
     try:
         from fisher.dash_app.services import get_auto_load_service
         svc = get_auto_load_service(scheduler)
-        result = svc.check_and_start()
-        if result.get("phase") == "initial_load":
-            scheduler.add_job("auto_load_batch", svc.initial_load,
-                              trigger="interval", seconds=30)
+        count = svc._db.query_df("SELECT COUNT(*) as c FROM bars_daily")
+        if count["c"].to_list()[0] == 0:
+            svc.set_status("phase", "initial_load")
+            svc.set_status("current", "0")
+            logger.info("Auto-load triggered: empty database")
         scheduler.add_job("auto_load_daily", svc.incremental_update,
                           trigger="cron", hour=16, minute=30)
-        logger.info("Auto-load scheduler initialized (phase=%s)", result.get("phase"))
     except Exception as e:
         logger.error("Startup init failed: %s", e)
 
