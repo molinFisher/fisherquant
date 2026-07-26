@@ -53,25 +53,53 @@ class AutoLoadService:
         for i in range(current - skipped, min(current - skipped + 5, len(codes))):
             try:
                 code = codes[i]
-                ticker_code = code.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
                 is_hk = ".HK" in code
                 market = "hk_connect" if is_hk else "a_share"
-                ticker = code if is_hk else resolve_ticker(ticker_code, "a_share")
 
-                df = ak.stock_zh_a_hist(symbol=ticker_code, period="daily",
-                                        start_date=AUTO_LOAD_CFG["initial_start"],
-                                        end_date=datetime.now().strftime("%Y-%m-%d"), adjust="qfq")
-                if df is not None and not df.empty:
-                    for _, r in df.iterrows():
-                        self._db.execute("INSERT OR REPLACE INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                         [ticker, str(r["日期"])[:10], float(r["开盘"]),
-                                          float(r["最高"]), float(r["最低"]), float(r["收盘"]),
-                                          int(r["成交量"]), float(r["成交额"]), market, 1.0])
-                    logger.info("Loaded %s (%d rows)", ticker, len(df))
+                if is_hk:
+                    ticker = code
+                    code_num = code.replace(".HK", "")
+                    df = ak.stock_hk_daily(symbol=code_num)
+                    if df is not None and not df.empty:
+                        rows = 0
+                        for _, r in df.iterrows():
+                            d = r["date"]
+                            ds = str(d) if not hasattr(d, 'strftime') else d.strftime("%Y-%m-%d")
+                            if ds >= AUTO_LOAD_CFG["initial_start"]:
+                                self._db.execute(
+                                    "INSERT OR REPLACE INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                    [ticker, ds, float(r["open"]), float(r["high"]),
+                                     float(r["low"]), float(r["close"]),
+                                     int(r.get("volume", 0)), 0.0, market, 1.0])
+                                rows += 1
+                        logger.info("Loaded HK %s (%d rows)", ticker, rows)
+                        current += 1
+                        self.set_status("current", str(current))
+                    else:
+                        logger.warning("No HK data for %s", ticker)
                 else:
-                    logger.warning("No data for %s", ticker)
-                current += 1
-                self.set_status("current", str(current))
+                    ticker_code = code.replace(".SH", "").replace(".SZ", "")
+                    ticker = resolve_ticker(ticker_code, "a_share")
+                    exch = "sh" if ticker_code.startswith(("6","5","9")) else "sz"
+                    start = AUTO_LOAD_CFG["initial_start"].replace("-", "")
+                    end = datetime.now().strftime("%Y%m%d")
+                    df = ak.stock_zh_a_daily(symbol=f"{exch}{ticker_code}",
+                                             start_date=start, end_date=end, adjust="qfq")
+                    if df is not None and not df.empty:
+                        for _, r in df.iterrows():
+                            d = r["date"]
+                            ds = str(d) if not hasattr(d, 'strftime') else d.strftime("%Y-%m-%d")
+                            self._db.execute(
+                                "INSERT OR REPLACE INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                [ticker, ds, float(r["open"]), float(r["high"]),
+                                 float(r["low"]), float(r["close"]),
+                                 int(float(r["volume"])), float(r.get("amount", 0.0)),
+                                 market, 1.0])
+                        logger.info("Loaded %s (%d rows)", ticker, len(df))
+                        current += 1
+                        self.set_status("current", str(current))
+                    else:
+                        logger.warning("No A-share data for %s", ticker)
             except Exception as e:
                 skipped += 1
                 self.set_status("skipped", str(skipped))
