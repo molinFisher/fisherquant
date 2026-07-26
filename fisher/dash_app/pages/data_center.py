@@ -282,10 +282,20 @@ def register_data_center_callbacks(app):
 
         if phase == "initial_load" and total > 0:
             pct = int(loaded * 100 / total) if total > 0 else 0
+            detail_parts = []
+            if loaded > 0:
+                detail_parts.append(f"已加载 {loaded}/{total}")
+            if skipped > 0:
+                detail_parts.append(f"跳过 {skipped}")
+            if loaded == 0 and skipped > 0:
+                detail_parts = [f"全部失败（{skipped} 个跳过）"]
+            elif loaded == 0 and skipped == 0:
+                detail_parts = [f"等待中..."]
+            detail = "，".join(detail_parts)
             return (
                 dbc.Badge("加载中", color="info", className="me-2"),
                 pct, f"{loaded}/{total} ({pct}%)",
-                f"成功加载 {loaded} 个标的" + (f"（{skipped} 个跳过）" if skipped else ""),
+                detail,
             )
         if phase == "complete" and total > 0:
             return (
