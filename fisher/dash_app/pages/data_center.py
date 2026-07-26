@@ -277,13 +277,15 @@ def register_data_center_callbacks(app):
         phase = progress.get("phase", "idle")
         current = int(progress.get("current", 0))
         total = int(progress.get("total", 0))
+        skipped = int(progress.get("skipped", 0))
+        loaded = current - skipped
 
         if phase == "initial_load" and total > 0:
-            pct = int(current * 100 / total)
+            pct = int(loaded * 100 / total) if total > 0 else 0
             return (
                 dbc.Badge("加载中", color="info", className="me-2"),
-                pct, f"{current}/{total} ({pct}%)",
-                f"正在加载第 {current}/{total} 个标的..."
+                pct, f"{loaded}/{total} ({pct}%)",
+                f"成功加载 {loaded} 个标的" + (f"（{skipped} 个跳过）" if skipped else ""),
             )
         if phase == "complete" and total > 0:
             return (

@@ -40,6 +40,7 @@ class AutoLoadService:
     def initial_load(self) -> dict:
         current = int(self._get("current", 0))
         total = int(self._get("total", 0))
+        skipped = int(self._get("skipped", 0))
 
         if total == 0:
             codes = self._load_index_codes()
@@ -49,7 +50,7 @@ class AutoLoadService:
             self.set_status("total", str(total))
 
         codes = self._load_index_codes()
-        for i in range(current, min(current + 5, len(codes))):
+        for i in range(current - skipped, min(current - skipped + 5, len(codes))):
             try:
                 code = codes[i]
                 ticker_code = code.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
@@ -72,8 +73,8 @@ class AutoLoadService:
                 current += 1
                 self.set_status("current", str(current))
             except Exception as e:
-                current += 1
-                self.set_status("current", str(current))
+                skipped += 1
+                self.set_status("skipped", str(skipped))
                 logger.warning("Skipped %s: %s", codes[i], e)
 
         if current >= total:
@@ -108,7 +109,8 @@ class AutoLoadService:
 
     def get_progress(self) -> dict:
         return {"phase": self._get("phase", "idle"), "current": int(self._get("current", 0)),
-                "total": int(self._get("total", 0)), "last_run": self._get("last_run", "")}
+                "total": int(self._get("total", 0)), "skipped": int(self._get("skipped", 0)),
+                "last_run": self._get("last_run", "")}
 
     def set_status(self, key: str, value: str):
         self._db.execute("INSERT OR REPLACE INTO auto_load_status VALUES (?,?)", [key, value])
