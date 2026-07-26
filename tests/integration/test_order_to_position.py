@@ -26,13 +26,17 @@ class TestOrderToPositionPipeline:
         order = create_order("000001.SZ", "a_share", "stock", OrderSide.BUY, 100, 10.0)
         paper.submit_order(order)
 
-        bar = Bar(
-            ticker="000001.SZ", market="a_share", frequency="1d",
-            open=9.9, high=10.1, low=9.8, close=10.0,
-            volume=100000, amount=1000000.0, bar_time=1234567890.0,
-        )
+        def _bar(t):
+            return Bar(
+                ticker="000001.SZ", market="a_share", frequency="1d",
+                open=9.9, high=10.1, low=9.8, close=10.0,
+                volume=100000, amount=1000000.0, bar_time=t,
+            )
 
-        filled = paper.on_bar(bar)
+        # P0-2：订单延迟一根 bar 成交（信号 bar N → 成交 N+1）。
+        # 第一根仅登记（返回空），第二根才撮合。
+        assert paper.on_bar(_bar(1)) == []
+        filled = paper.on_bar(_bar(2))
         assert len(filled) == 1
         assert filled[0].status == OrderStatus.FILLED
 
@@ -57,12 +61,15 @@ class TestOrderToPositionPipeline:
 
         paper.submit_order(order)
 
-        bar = Bar(
-            ticker="000001.SZ", market="a_share", frequency="1d",
-            open=10.0, high=10.2, low=9.9, close=10.0,
-            volume=100000, amount=1000000.0, bar_time=1234567890.0,
-        )
-        filled = paper.on_bar(bar)
+        def _bar(t):
+            return Bar(
+                ticker="000001.SZ", market="a_share", frequency="1d",
+                open=10.0, high=10.2, low=9.9, close=10.0,
+                volume=100000, amount=1000000.0, bar_time=t,
+            )
+        # P0-2：延迟一根 bar 成交
+        paper.on_bar(_bar(1))
+        filled = paper.on_bar(_bar(2))
         assert len(filled) == 1
 
         positions.update_on_fill(filled[0], 10.0)
@@ -88,12 +95,15 @@ class TestOrderToPositionPipeline:
         o1 = create_order("000001.SZ", "a_share", "stock", OrderSide.BUY, 100, 10.0)
         paper.submit_order(o1)
 
-        bar = Bar(
-            ticker="000001.SZ", market="a_share", frequency="1d",
-            open=10.0, high=10.2, low=9.9, close=10.0,
-            volume=100000, amount=1000000.0, bar_time=1234567890.0,
-        )
-        paper.on_bar(bar)
+        def _bar(t):
+            return Bar(
+                ticker="000001.SZ", market="a_share", frequency="1d",
+                open=10.0, high=10.2, low=9.9, close=10.0,
+                volume=100000, amount=1000000.0, bar_time=t,
+            )
+        # P0-2：延迟一根 bar 成交
+        paper.on_bar(_bar(1))
+        paper.on_bar(_bar(2))
         positions.update_on_fill(o1, 10.0)
 
         pos = positions.get_position("000001.SZ")
@@ -109,24 +119,32 @@ class TestOrderToPositionPipeline:
 
         buy = create_order("000001.SZ", "a_share", "stock", OrderSide.BUY, 200, 10.0)
         paper.submit_order(buy)
-        bar = Bar(
-            ticker="000001.SZ", market="a_share", frequency="1d",
-            open=10.0, high=10.2, low=9.9, close=10.0,
-            volume=100000, amount=1000000.0, bar_time=1,
-        )
-        paper.on_bar(bar)
+
+        def _buy_bar(t):
+            return Bar(
+                ticker="000001.SZ", market="a_share", frequency="1d",
+                open=10.0, high=10.2, low=9.9, close=10.0,
+                volume=100000, amount=1000000.0, bar_time=t,
+            )
+        # P0-2：延迟一根 bar 成交
+        paper.on_bar(_buy_bar(1))
+        paper.on_bar(_buy_bar(2))
         positions.update_on_fill(buy, 10.0)
 
         positions.settle_t1()
 
         sell = create_order("000001.SZ", "a_share", "stock", OrderSide.SELL, 100, 11.0)
         paper.submit_order(sell)
-        bar2 = Bar(
-            ticker="000001.SZ", market="a_share", frequency="1d",
-            open=11.0, high=11.2, low=10.9, close=11.0,
-            volume=100000, amount=1000000.0, bar_time=2,
-        )
-        paper.on_bar(bar2)
+
+        def _sell_bar(t):
+            return Bar(
+                ticker="000001.SZ", market="a_share", frequency="1d",
+                open=11.0, high=11.2, low=10.9, close=11.0,
+                volume=100000, amount=1000000.0, bar_time=t,
+            )
+        # P0-2：延迟一根 bar 成交
+        paper.on_bar(_sell_bar(3))
+        paper.on_bar(_sell_bar(4))
         positions.update_on_fill(sell, 11.0)
 
         pos = positions.get_position("000001.SZ")

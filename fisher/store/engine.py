@@ -78,6 +78,10 @@ class DuckDBManager:
                 try:
                     conn = duckdb.connect(path)
                     conn.execute("PRAGMA threads=2")
+                    # DuckDB 读连接默认即为 autocommit：每次 SELECT 立即提交并释放快照，
+                    # 因此读连接不会长期持有快照阻塞写连接的 checkpoint（避免读写死锁）。
+                    # 注：本环境 DuckDB 版本不支持 PRAGMA auto_commit（会抛 CatalogException），
+                    # 故不再显式设置——默认 autocommit 即满足需求。
                     self._read_pool.put(conn)
                 except Exception as e:
                     logger.warning("读连接池创建失败: %s", e)
@@ -142,11 +146,16 @@ class DuckDBManager:
             self._write_conn.executemany(sql, params_list)
 
     def query_df(self, sql: str, params: list | None = None) -> pl.DataFrame:
-        conn = self._acquire_read()
+        # 每次查询使用独立临时连接并立即关闭，避免读连接持有快照阻塞写连接
+        # （DuckDB：读连接未释放快照时会阻塞同一库的写入，导致死锁）。
+        conn = duckdb.connect(self._path)
         try:
             return conn.sql(sql, params=params or []).pl()
         finally:
-            self._read_pool.put(conn)
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     @contextmanager
     def transaction(self):

@@ -56,7 +56,7 @@ class TestExceptionLogging:
         result = svc.import_json("{invalid}")
         assert result["status"] == "error"
 
-    def test_data_service_search_no_crash(self, data_service):
+    def test_data_service_search_no_crash(self, data_service, mock_akshare):
         result = data_service.search_symbols("test_query_xyz")
         assert isinstance(result, list)
 

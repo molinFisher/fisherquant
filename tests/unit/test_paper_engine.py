@@ -25,7 +25,7 @@ def _make_order(ticker="000001.SZ", side=OrderSide.BUY, quantity=100, price=10.0
 def _make_bar(ticker="000001.SZ", open=10.0, close=10.2, volume=100000, amount=1000000.0):
     return Bar(
         ticker=ticker, market="a_share", frequency="1d",
-        open=open, high=10.5, low=9.5, close=close,
+        open=open, high=max(open, close), low=min(open, close), close=close,
         volume=volume, amount=amount, bar_time=1234567890.0,
     )
 
@@ -84,6 +84,8 @@ class TestPaperEngineOnBarFill:
         order = _make_order(side=OrderSide.BUY, quantity=100, price=10.0)
         engine.submit_order(order)
         bar = _make_bar(open=9.9, close=10.0, volume=100000)
+        # P0-2：提交当根 bar 的订单延迟一根 bar 成交，故需第二根 bar 才撮合
+        engine.on_bar(bar)
         filled = engine.on_bar(bar)
         assert len(filled) == 1
         assert filled[0].order_id == order.order_id
@@ -102,6 +104,7 @@ class TestPaperEngineOnBarFill:
         order = _make_order(side=OrderSide.SELL, quantity=100, price=10.0)
         engine.submit_order(order)
         bar = _make_bar(open=10.0, close=10.0, volume=100000)
+        engine.on_bar(bar)
         filled = engine.on_bar(bar)
         assert len(filled) == 1
         assert order.status == OrderStatus.FILLED
@@ -111,6 +114,7 @@ class TestPaperEngineOnBarFill:
         order = _make_order(side=OrderSide.BUY, quantity=100, price=10.0)
         engine.submit_order(order)
         bar = _make_bar(open=9.9, close=10.0, volume=100000)
+        engine.on_bar(bar)
         engine.on_bar(bar)
         assert order.filled_qty == 100
         assert order.filled_price > 0
@@ -131,6 +135,7 @@ class TestPaperEngineOnBarFill:
         engine.submit_order(o1)
         engine.submit_order(o2)
         bar = _make_bar(open=10.0, close=10.0, volume=100000)
+        engine.on_bar(bar)
         filled = engine.on_bar(bar)
         assert len(filled) == 2
 

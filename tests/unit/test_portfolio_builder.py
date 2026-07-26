@@ -11,6 +11,7 @@ def _make_signal(
     confidence=1.0,
     reason="test",
     market="a_share",
+    limit_price=10.0,
 ):
     return Signal(
         strategy="test",
@@ -20,6 +21,7 @@ def _make_signal(
         quantity=quantity,
         confidence=confidence,
         reason=reason,
+        limit_price=limit_price,
     )
 
 
@@ -67,8 +69,11 @@ class TestWeightMethods:
     def test_kelly_with_confidence(self):
         merged = {"A": {"confidence": 0.7, "win_loss_ratio": 2.0}, "B": {"confidence": 0.3, "win_loss_ratio": 1.0}}
         weights = kelly(merged)
-        assert len(weights) >= 1
-        assert abs(weights["A"] - 0.55) < 0.01
+        # 稳健凯利（P1-11）：f*_A = 0.7 - 0.3/2 = 0.55 → 截断 0.25 → 分数 0.5 = 0.125；
+        # B 负 edge（f*<0）被剔除，不分配仓位。
+        assert len(weights) == 1
+        assert "A" in weights
+        assert abs(weights["A"] - 0.125) < 0.01
 
     def test_kelly_empty(self):
         weights = kelly({})
@@ -160,10 +165,12 @@ class TestPortfolioBuilder:
 
     def test_allocation_adds_to_capital(self):
         builder = PortfolioBuilder(method="equal_weight", max_positions=4)
+        # 信号数量足够大（≥ 单标分配额/价格），使下单数量不被权重分配额截断，
+        # 从而总部署资金 ≈ 全部本金。
         signals = [
-            _make_signal("A", OrderSide.BUY, 100, 1.0),
-            _make_signal("B", OrderSide.BUY, 100, 1.0),
+            _make_signal("A", OrderSide.BUY, 10000, 1.0),
+            _make_signal("B", OrderSide.BUY, 10000, 1.0),
         ]
         orders = builder.build_orders(signals, 100000)
-        total_allocation = sum(o.price for o in orders)
+        total_allocation = sum(o.price * o.quantity for o in orders)
         assert abs(total_allocation - 100000) < 0.01

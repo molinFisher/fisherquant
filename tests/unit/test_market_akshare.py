@@ -30,7 +30,9 @@ class TestAkshareAdapter:
         assert len(gw._subscribed) == 2
 
     @pytest.mark.asyncio
-    async def test_get_bars_returns_dataframe(self):
+    async def test_get_bars_returns_dataframe(self, mock_akshare):
+        # mock_akshare fixture 替换 ak.stock_zh_a_hist，离线可跑、不触网
         gw = AkshareAdapter(MarketConfig(source="akshare"))
         bars = await gw.get_bars("000001.SZ", "2025-07-01", "2025-07-07", "1d")
-        assert bars is not None
+        assert isinstance(bars, list) and len(bars) >= 1, f"bars={bars}"
+        assert bars[0].close > 0

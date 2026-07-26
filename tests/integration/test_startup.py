@@ -161,13 +161,16 @@ class TestFullSystemStartup:
 
         paper.submit_order(order)
 
-        bar = Bar(
-            ticker="000001.SZ", market="a_share", frequency="1d",
-            open=10.0, high=10.2, low=9.9, close=10.0,
-            volume=100000, amount=1000000.0, bar_time=1234567890.0,
-        )
+        def _bar(t):
+            return Bar(
+                ticker="000001.SZ", market="a_share", frequency="1d",
+                open=10.0, high=10.2, low=9.9, close=10.0,
+                volume=100000, amount=1000000.0, bar_time=t,
+            )
 
-        filled = paper.on_bar(bar)
+        # P0-2：订单延迟一根 bar 成交（信号 bar N → 成交 N+1）
+        paper.on_bar(_bar(1))
+        filled = paper.on_bar(_bar(2))
         assert len(filled) == 1
 
         positions.update_on_fill(filled[0], 10.0)

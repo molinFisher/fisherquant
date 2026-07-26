@@ -168,16 +168,30 @@ def mock_all_akshare(monkeypatch):
     def mock_financial(*args, **kwargs):
         return MockAKShareDF([{"报告期": "2024-12-31", "营业收入": 100000000}])
 
+    def mock_stock_hk_spot(*args, **kwargs):
+        # search_symbols 第 3 步会调用 ak.stock_hk_spot()；必须 mock 以免触网。
+        return MockAKShareDF([
+            {"代码": "00700", "名称": "腾讯控股"},
+            {"代码": "00941", "名称": "中国移动"},
+        ])
+
+    def mock_zh_a_hist_min_em(symbol=None, period="1", start_date="", end_date="", adjust=""):
+        return MockAKShareDF(_MOCK_BARS)
+
     monkeypatch.setattr(ak, "stock_info_a_code_name", mock_stock_info)
     monkeypatch.setattr(ak, "stock_zh_a_hist", mock_zh_a_hist)
     monkeypatch.setattr(ak, "index_stock_cons", mock_index_cons)
     monkeypatch.setattr(ak, "hk_index_cons", mock_hk_index_cons, raising=False)
     monkeypatch.setattr(ak, "stock_financial_abstract", mock_financial)
+    monkeypatch.setattr(ak, "stock_hk_spot", mock_stock_hk_spot, raising=False)
+    monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", mock_zh_a_hist_min_em, raising=False)
     return {
         "stock_info": mock_stock_info,
         "zh_a_hist": mock_zh_a_hist,
         "index_cons": mock_index_cons,
         "hk_index_cons": mock_hk_index_cons,
+        "hk_spot": mock_stock_hk_spot,
+        "zh_a_hist_min_em": mock_zh_a_hist_min_em,
     }
 
 

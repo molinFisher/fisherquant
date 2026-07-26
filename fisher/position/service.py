@@ -52,7 +52,10 @@ class PositionService:
             pos["quantity"] = 0
             pos["avg_cost"] = 0.0
         elif (old_qty >= 0 and sign > 0) or (old_qty <= 0 and sign < 0):
-            base = old_cost * abs(old_qty) + fill_price * effective_qty
+            # 成本基准采用摊薄成本（含佣金）：与 A 股券商"成本价"口径一致，
+            # 使未实现盈亏 = 市值 - avg_cost*qty 反映真实经济损益。
+            # 仅在同方向加仓（买入扩多 / 卖出扩空）时计入本笔佣金。
+            base = old_cost * abs(old_qty) + fill_price * effective_qty + commission
             pos["avg_cost"] = round(base / abs(new_qty), 4) if new_qty != 0 else 0.0
             pos["quantity"] = new_qty
         else:

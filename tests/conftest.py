@@ -61,9 +61,16 @@ def mock_index_cons(monkeypatch):
         def __init__(self, data):
             self._data = data
 
+        @property
+        def columns(self):
+            return list(self._data[0].keys()) if self._data else []
+
         def iterrows(self):
             for i, row in enumerate(self._data):
                 yield i, row
+
+        def head(self, n):
+            return MockDF(self._data[:n])
 
         @property
         def empty(self):
@@ -103,10 +110,37 @@ def mock_index_cons(monkeypatch):
         ]
         return MockAKShareDF(mock_data)
 
+    def mock_stock_zh_a_daily(symbol=None, start_date="", end_date="", adjust=""):
+        """auto_load_service.initial_load() 逐股下载日线走此接口，必须 mock 以免触网。"""
+        daily = [
+            {"date": "2024-01-02", "open": 100.0, "high": 101.0, "low": 99.0,
+             "close": 100.5, "volume": 1000000, "amount": 100500000.0},
+            {"date": "2024-01-03", "open": 100.5, "high": 102.0, "low": 100.0,
+             "close": 101.0, "volume": 1200000, "amount": 121200000.0},
+        ]
+        return MockAKShareDF(daily)
+
+    def mock_stock_hk_daily(symbol=None, start_date="", end_date="", adjust=""):
+        hk = [
+            {"date": "2024-01-02", "open": 200.0, "high": 201.0, "low": 199.0,
+             "close": 200.5, "volume": 500000, "amount": 100250000.0},
+        ]
+        return MockAKShareDF(hk)
+
+    def mock_stock_hk_spot(*args, **kwargs):
+        """_load_index_codes 用 stock_hk_spot 拉港股列表，必须 mock 以免触网。"""
+        rows = [{"name": f"HK{i:05d}", "code": f"{i:05d}"} for i in range(80)]
+        return MockDF(rows)
+
     monkeypatch.setattr(ak, "index_stock_cons", mock_csi300, raising=False)
     monkeypatch.setattr(ak, "hk_index_cons", mock_hsi, raising=False)
     monkeypatch.setattr(ak, "stock_zh_a_hist", mock_zh_a_hist_auto, raising=False)
-    return {"csi300": mock_csi300, "hsi": mock_hsi, "zh_a_hist": mock_zh_a_hist_auto}
+    monkeypatch.setattr(ak, "stock_zh_a_daily", mock_stock_zh_a_daily, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_daily", mock_stock_hk_daily, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_spot", mock_stock_hk_spot, raising=False)
+    return {"csi300": mock_csi300, "hsi": mock_hsi, "zh_a_hist": mock_zh_a_hist_auto,
+            "zh_a_daily": mock_stock_zh_a_daily, "hk_daily": mock_stock_hk_daily,
+            "hk_spot": mock_stock_hk_spot}
 
 
 @pytest.fixture
@@ -186,6 +220,9 @@ class MockAKShareSeries:
     def str(self):
         return self
 
+    def astype(self, dtype=None):
+        return self
+
     def contains(self, pat, na=False):
         return MockBoolList([pat in str(v) for v in self._data])
 
@@ -216,7 +253,19 @@ def mock_akshare(monkeypatch):
     def mock_financial_abstract(symbol=""):
         return MockAKShareDF([{"报告期": "2024-12-31", "营业收入": 100000000}])
 
+    def mock_stock_hk_spot(*args, **kwargs):
+        return MockAKShareDF([
+            {"代码": "00700", "名称": "腾讯控股"},
+            {"代码": "00941", "名称": "中国移动"},
+        ])
+
+    def mock_zh_a_hist_min_em(symbol=None, period="1", start_date="", end_date="", adjust=""):
+        return MockAKShareDF(mock_bars)
+
     monkeypatch.setattr(ak, "stock_info_a_code_name", mock_stock_info)
     monkeypatch.setattr(ak, "stock_zh_a_hist", mock_zh_a_hist)
     monkeypatch.setattr(ak, "stock_financial_abstract", mock_financial_abstract)
-    return {"stock_info": mock_stock_info, "zh_a_hist": mock_zh_a_hist}
+    monkeypatch.setattr(ak, "stock_hk_spot", mock_stock_hk_spot, raising=False)
+    monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", mock_zh_a_hist_min_em, raising=False)
+    return {"stock_info": mock_stock_info, "zh_a_hist": mock_zh_a_hist,
+            "hk_spot": mock_stock_hk_spot, "zh_a_hist_min_em": mock_zh_a_hist_min_em}

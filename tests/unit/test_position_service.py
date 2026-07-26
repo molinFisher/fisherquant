@@ -66,16 +66,36 @@ class TestPositionServiceBasic:
         pos = svc.get_position("000001.SZ")
         assert pos is None
 
-    def test_sell_more_than_held_raises(self):
-        svc = PositionService()
+    def test_sell_more_than_held_truncates_to_flat(self):
+        # P1-8：不允许做空时，卖出超过持仓不再抛异常，而是截断为仅平多（净头寸归零）。
+        # 旧断言（期望 raise ValueError）已过时——见 量化系统改进清单.md P1-8：
+        # 原 raise 会导致 pair_trade 等策略回测直接崩溃。
+        svc = PositionService()  # allow_short=False（默认）
         o1 = _make_order(quantity=50, price=10.0)
         _fill_order(o1, 10.0, 5.0)
         svc.update_on_fill(o1, 10.0)
 
         o2 = _make_order(side=OrderSide.SELL, quantity=100, price=11.0)
         _fill_order(o2, 11.0, 5.0)
-        with pytest.raises(ValueError, match="Cannot sell"):
-            svc.update_on_fill(o2, 11.0)
+        svc.update_on_fill(o2, 11.0)  # 不抛异常
+
+        # 仅平掉持有的 50 股，剩余头寸归零并被移除
+        assert svc.get_position("000001.SZ") is None
+
+    def test_sell_more_than_held_allow_short_goes_negative(self):
+        # allow_short=True 时，卖出超过持仓形成净空头（负持仓）。
+        svc = PositionService(allow_short=True)
+        o1 = _make_order(quantity=50, price=10.0)
+        _fill_order(o1, 10.0, 5.0)
+        svc.update_on_fill(o1, 10.0)
+
+        o2 = _make_order(side=OrderSide.SELL, quantity=100, price=11.0)
+        _fill_order(o2, 11.0, 5.0)
+        svc.update_on_fill(o2, 11.0)
+
+        pos = svc.get_position("000001.SZ")
+        assert pos is not None
+        assert pos["quantity"] == -50
 
     def test_get_position_nonexistent(self):
         svc = PositionService()
