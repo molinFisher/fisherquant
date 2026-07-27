@@ -628,7 +628,7 @@ class TestHomeCallbacks:
     def test_auto_load_indicator(self, monkeypatch):
         class _Svc:
             def get_progress(self):
-                return {"phase": "initial_load", "current": 3, "total": 10}
+                return {"phase": "loading", "current": 3, "total": 10}
         monkeypatch.setattr(hc, "get_auto_load_service", lambda: _Svc())
         with capture_dash_callbacks() as app:
             hc.register_home_callbacks(app)

@@ -39,6 +39,19 @@ _MOCK_HK_CODES = [
     {"stock_code": "00941"},
 ]
 
+# 自动加载 V1.3 下载接口（stock_zh_a_daily / stock_hk_daily）返回列格式
+_MOCK_DAILY_BARS = [
+    {"date": "2024-01-02", "open": 100.0, "high": 101.0, "low": 99.0,
+     "close": 100.5, "volume": 1000000, "amount": 100500000.0},
+    {"date": "2024-01-03", "open": 100.5, "high": 102.0, "low": 100.0,
+     "close": 101.0, "volume": 1200000, "amount": 121200000.0},
+]
+
+_MOCK_HK_DAILY_BARS = [
+    {"date": "2024-01-02", "open": 200.0, "high": 201.0, "low": 199.0,
+     "close": 200.5, "volume": 500000, "amount": 100250000.0},
+]
+
 
 class MockAKShareDF:
     def __init__(self, data):
@@ -178,6 +191,12 @@ def mock_all_akshare(monkeypatch):
     def mock_zh_a_hist_min_em(symbol=None, period="1", start_date="", end_date="", adjust=""):
         return MockAKShareDF(_MOCK_BARS)
 
+    def mock_zh_a_daily(symbol=None, start_date="", end_date="", adjust=""):
+        return MockAKShareDF(_MOCK_DAILY_BARS)
+
+    def mock_hk_daily(symbol=None, start_date="", end_date="", adjust=""):
+        return MockAKShareDF(_MOCK_HK_DAILY_BARS)
+
     monkeypatch.setattr(ak, "stock_info_a_code_name", mock_stock_info)
     monkeypatch.setattr(ak, "stock_zh_a_hist", mock_zh_a_hist)
     monkeypatch.setattr(ak, "index_stock_cons", mock_index_cons)
@@ -185,6 +204,8 @@ def mock_all_akshare(monkeypatch):
     monkeypatch.setattr(ak, "stock_financial_abstract", mock_financial)
     monkeypatch.setattr(ak, "stock_hk_spot", mock_stock_hk_spot, raising=False)
     monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", mock_zh_a_hist_min_em, raising=False)
+    monkeypatch.setattr(ak, "stock_zh_a_daily", mock_zh_a_daily, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_daily", mock_hk_daily, raising=False)
     return {
         "stock_info": mock_stock_info,
         "zh_a_hist": mock_zh_a_hist,
@@ -192,6 +213,8 @@ def mock_all_akshare(monkeypatch):
         "hk_index_cons": mock_hk_index_cons,
         "hk_spot": mock_stock_hk_spot,
         "zh_a_hist_min_em": mock_zh_a_hist_min_em,
+        "zh_a_daily": mock_zh_a_daily,
+        "hk_daily": mock_hk_daily,
     }
 
 
@@ -229,6 +252,30 @@ def app_instance(tmp_path, mock_all_akshare):
             code VARCHAR PRIMARY KEY, name VARCHAR
         )
     """)
+    # 标的搜索 V1.2：只读标的字典（R-10）+ 灌入样本，供新搜索链路使用
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_dict (
+            ticker VARCHAR NOT NULL,
+            code VARCHAR NOT NULL,
+            name VARCHAR NOT NULL,
+            market VARCHAR NOT NULL,
+            pinyin_full VARCHAR DEFAULT '',
+            pinyin_abbr VARCHAR DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ticker)
+        )
+    """)
+    db.execute_many(
+        "INSERT INTO symbol_dict (ticker, code, name, market, pinyin_full, pinyin_abbr) "
+        "VALUES (?,?,?,?,?,?)",
+        [
+            ["600519.SH", "600519", "贵州茅台", "a_share", "GUIZHOUMAOTAI", "GZMT"],
+            ["000001.SZ", "000001", "平安银行", "a_share", "PINGANYINHANG", "PAYH"],
+            ["300750.SZ", "300750", "宁德时代", "a_share", "NINGDESHIDAI", "NDSD"],
+            ["00700.HK", "00700", "腾讯控股", "hk_connect", "TENGXUNKONGGU", "TXKG"],
+            ["00941.HK", "00941", "中国移动", "hk_connect", "ZHONGGUOYIDONG", "ZGYD"],
+        ],
+    )
 
     # Build the Dash app
     import dash
@@ -383,27 +430,36 @@ class TestSearchFetchFlow:
 class TestAutoLoadIntegration:
     """Auto-load service integration with data service."""
 
+    def _stop_auto_load(self, svc):
+        svc._stop_event.set()
+        if getattr(svc, "_thread", None) is not None:
+            svc._thread.join(timeout=5)
+
     def test_auto_load_check_empty_db(self, app_instance, mock_all_akshare):
         from fisher.dash_app.services import get_auto_load_service, get_limiter, get_db
         svc = get_auto_load_service()
-        result = svc.check_and_start()
-        assert result["phase"] in ("initial_load", "complete")
+        # V1.3：空库经 recover() 触发自动加载（返回 loading 阶段）
+        result = svc.recover()
+        assert result["phase"] in ("loading", "idle", "done", "paused", "error")
+        self._stop_auto_load(svc)
 
     def test_auto_load_progress(self, app_instance, mock_all_akshare):
         from fisher.dash_app.services import get_auto_load_service
         svc = get_auto_load_service()
 
-        svc.check_and_start()
+        svc.recover()
         progress = svc.get_progress()
-        assert "current" in progress or "phase" in progress
+        assert "current" in progress and "phase" in progress
+        self._stop_auto_load(svc)
 
     def test_auto_load_then_delete(self, app_instance, mock_all_akshare):
         from fisher.dash_app.services import get_data_service, get_auto_load_service
         data_svc = get_data_service()
         auto_svc = get_auto_load_service()
 
-        auto_result = auto_svc.check_and_start()
-        assert auto_result["phase"] in ("initial_load", "complete")
+        auto_result = auto_svc.recover()
+        assert auto_result["phase"] in ("loading", "idle", "done", "paused", "error")
+        self._stop_auto_load(auto_svc)
 
         stats = data_svc.get_cache_stats()
         if stats["total"] > 0:

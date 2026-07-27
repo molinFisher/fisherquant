@@ -85,7 +85,7 @@ def register_home_callbacks(app):
         current = progress.get("current", 0)
         total = progress.get("total", 0)
 
-        if phase == "initial_load" and total > 0:
+        if phase in ("loading", "paused") and total > 0:
             return html.Div(
                 dbc.Alert(
                     f"⏳ 数据加载中，已加载 {current}/{total} 只",
@@ -93,7 +93,7 @@ def register_home_callbacks(app):
                     style={"fontSize": "14px"},
                 )
             )
-        if phase in ("idle", "complete") and total > 0 and current >= total:
+        if phase == "done" and total > 0 and current >= total:
             return html.Div(
                 dbc.Alert("✅ 数据就绪", color="success", className="py-1 px-3 small mb-0",
                           style={"fontSize": "14px"})

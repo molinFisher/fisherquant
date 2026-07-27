@@ -39,6 +39,7 @@ def register_data_cache_callbacks(app):
 
         columns = [
             {"name": "代码", "id": "ticker"},
+            {"name": "名称", "id": "name"},
             {"name": "市场", "id": "market"},
             {"name": "数据条数", "id": "records"},
             {"name": "起始日期", "id": "start_date"},
@@ -83,6 +84,7 @@ def _build_cached_table():
 
     columns = [
         {"name": "代码", "id": "ticker"},
+        {"name": "名称", "id": "name"},
         {"name": "市场", "id": "market"},
         {"name": "数据条数", "id": "records"},
         {"name": "起始日期", "id": "start_date"},

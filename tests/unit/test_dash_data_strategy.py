@@ -195,19 +195,23 @@ class TestDataCallbacks:
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
             cb = _nth(app, 0)
-        opts, val, status = cb("a")
-        assert opts == [] and val is None and status == ""
+        # V1.2：回调现返回 4 元组（新增 search-results-store 数据），状态为组件
+        opts, val, status, store = cb("a")
+        assert opts == [] and val is None and store == []
+        assert "至少" in "".join(_text(status))
 
     def test_search_symbols_matches(self, monkeypatch):
-        fake = FakeService(search_symbols=[{"label": "600519", "value": "600519"}])
+        fake = FakeService(search_symbols=[
+            {"label": "600519 贵州茅台", "value": "600519.SH", "market": "a_share"}])
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: fake)
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
             cb = _nth(app, 0)
-        opts, val, status = cb("6005")
-        assert opts == [{"label": "600519", "value": "600519"}]
-        assert "找到 1 个结果" in status
+        opts, val, status, store = cb("6005")
+        assert opts == [{"label": "600519 贵州茅台", "value": "600519.SH"}]
+        assert "找到 1 个结果" in "".join(_text(status))
+        assert store == fake.data["search_symbols"]  # 完整结构写入 store
 
     def test_search_symbols_exception(self, monkeypatch):
         class _Boom(FakeService):
@@ -218,8 +222,10 @@ class TestDataCallbacks:
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
             cb = _nth(app, 0)
-        opts, val, status = cb("600519")
-        assert opts == [] and "搜索异常" in status
+        opts, val, status, store = cb("600519")
+        # R-31：不再暴露技术堆栈，改为友好文案
+        assert opts == [] and store == []
+        assert "暂时不可用" in "".join(_text(status))
 
     def test_fetch_data_no_symbols(self, monkeypatch):
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
@@ -267,11 +273,14 @@ class TestDataCallbacks:
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
             cb = _nth(app, 2)
-        none_case = cb(None)
+        # V1.2：选中回调现接收 (selected, search-results-store)
+        none_case = cb(None, [])
         assert none_case == "请先搜索并选择标的"
-        sel_case = cb("600519")
-        assert isinstance(sel_case, html.Div)
-        assert "已选择" in "".join(_text(sel_case)) and "600519" in "".join(_text(sel_case))
+        results = [{"value": "600519.SH", "code": "600519", "name": "贵州茅台",
+                    "market": "a_share", "pinyin_abbr": "GZMT"}]
+        sel_case = cb("600519.SH", results)
+        txt = "".join(_text(sel_case))
+        assert "贵州茅台" in txt and "600519" in txt
 
     def test_clear_single_search_on_batch(self, monkeypatch):
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",

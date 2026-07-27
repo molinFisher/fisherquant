@@ -2,6 +2,10 @@ import dash_bootstrap_components as dbc
 from dash import html, dcc, dash_table, Input, Output, State, callback, no_update, ctx
 import logging
 
+from fisher.dash_app.services.auto_load_service import (
+    PHASE_IDLE, PHASE_LOADING, PHASE_PAUSED, PHASE_DONE, PHASE_ERROR,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,10 +190,18 @@ def _create_auto_load_tab():
                                 dbc.CardHeader("控制"),
                                 dbc.CardBody(
                                     [
+                                        # 三态按钮：开始/继续（断点续传）/暂停/重新加载（二次确认）
                                         dbc.Button("开始自动加载", id="auto-load-start-btn",
                                                    color="primary", className="w-100 mb-2"),
+                                        dbc.Button("继续", id="auto-load-resume-btn",
+                                                   color="info", className="w-100 mb-2",
+                                                   style={"display": "none"}),
                                         dbc.Button("暂停", id="auto-load-pause-btn",
-                                                   color="warning", className="w-100 mb-2"),
+                                                   color="warning", className="w-100 mb-2",
+                                                   style={"display": "none"}),
+                                        dbc.Button("重新加载", id="auto-load-reload-btn",
+                                                   color="secondary", className="w-100 mb-2",
+                                                   style={"display": "none"}),
                                         html.Div(id="auto-load-action-feedback", className="text-muted small mt-1"),
                                     ]
                                 ),
@@ -198,6 +210,24 @@ def _create_auto_load_tab():
                         width=4,
                     ),
                 ]
+            ),
+            # 二次确认 Modal：「重新加载」会清空账本（保留历史数据）
+            dbc.Modal(
+                [
+                    dbc.ModalHeader(dbc.ModalTitle("确认重新加载？")),
+                    dbc.ModalBody(
+                        "将清空当前加载账本并基于数据库已有历史数据重新规划（历史行情不会被删除）。"
+                        "正在进行的加载会先暂停。"
+                    ),
+                    dbc.ModalFooter(
+                        [
+                            dbc.Button("取消", id="auto-load-reload-cancel", color="secondary", className="me-2"),
+                            dbc.Button("确认重新加载", id="auto-load-reload-confirm", color="primary"),
+                        ]
+                    ),
+                ],
+                id="auto-load-reload-modal",
+                is_open=False,
             ),
         ]
     )
@@ -261,65 +291,63 @@ def register_data_center_callbacks(app):
         Output("auto-load-progress-bar", "value"),
         Output("auto-load-progress-bar", "label"),
         Output("auto-load-progress-detail", "children"),
-        Output("auto-load-start-btn", "disabled"),
-        Output("auto-load-pause-btn", "disabled"),
+        Output("auto-load-start-btn", "style"),
+        Output("auto-load-resume-btn", "style"),
+        Output("auto-load-pause-btn", "style"),
+        Output("auto-load-reload-btn", "style"),
         Input("auto-load-progress-poll", "n_intervals"),
     )
     def update_auto_load_progress(n):
         try:
             svc = get_auto_load_service()
-            progress = svc.get_progress()
+            state = svc.get_state()
         except Exception as e:
             logger.error("auto-load progress check failed: %s", e)
-            return "状态检查失败", 0, "0%", "", True, True
+            hidden = {"display": "none"}
+            return "状态检查失败", 0, "0%", "", hidden, hidden, hidden, hidden
 
-        phase = progress.get("phase", "idle")
-        current = int(progress.get("current", 0))
-        total = int(progress.get("total", 0))
-        skipped = int(progress.get("skipped", 0))
-        loaded = current - skipped
+        phase = state.get("phase", PHASE_IDLE)
+        total = int(state.get("total", 0))
+        done = int(state.get("done", 0))
+        failed = int(state.get("failed", 0))
+        pending = int(state.get("pending", 0))
 
-        is_running = phase == "initial_load"
-        start_disabled = is_running
-        pause_disabled = not is_running
+        show_start = {"display": "block" if phase in (PHASE_IDLE, PHASE_DONE, PHASE_ERROR) else "none"}
+        show_resume = {"display": "block" if state.get("can_resume") else "none"}
+        show_pause = {"display": "block" if phase == PHASE_LOADING else "none"}
+        show_reload = {"display": "block" if phase in (PHASE_DONE, PHASE_PAUSED, PHASE_ERROR) else "none"}
 
-        if phase == "initial_load" and total > 0:
-            pct = int(loaded * 100 / total) if total > 0 else 0
-            detail_parts = []
-            if loaded > 0:
-                detail_parts.append(f"已加载 {loaded}/{total}")
-            if skipped > 0:
-                detail_parts.append(f"跳过 {skipped}")
-            if loaded == 0 and skipped > 0:
-                detail_parts = [f"全部失败（{skipped} 个跳过）"]
-            elif loaded == 0 and skipped == 0:
-                detail_parts = [f"等待中..."]
-            detail = "，".join(detail_parts)
-            return (
-                dbc.Badge("加载中", color="info", className="me-2"),
-                pct, f"{loaded}/{total} ({pct}%)",
-                detail, start_disabled, pause_disabled,
-            )
-        if phase == "complete" and total > 0:
-            return (
-                dbc.Badge("已完成", color="success", className="me-2"),
-                100, f"{total}/{total} (100%)",
-                f"共加载 {total} 个标的，数据就绪",
-                start_disabled, pause_disabled,
-            )
-        if phase == "error":
-            return (
-                dbc.Badge("出错", color="danger", className="me-2"),
-                0, "错误",
-                progress.get("message", "加载过程发生错误"),
-                start_disabled, pause_disabled,
-            )
-        return (
-            dbc.Badge("空闲", color="secondary", className="me-2"),
-            0, "0%",
-            "自动加载未运行，请点击「开始自动加载」",
-            start_disabled, pause_disabled,
-        )
+        if phase == PHASE_LOADING and total > 0:
+            pct = int(done * 100 / total) if total > 0 else 0
+            parts = []
+            if done > 0:
+                parts.append(f"已加载 {done}/{total}")
+            if failed > 0:
+                parts.append(f"失败 {failed}")
+            if pending > 0:
+                parts.append(f"待处理 {pending}")
+            detail = "，".join(parts) if parts else "等待中..."
+            return (dbc.Badge("加载中", color="info", className="me-2"),
+                    pct, f"{done}/{total} ({pct}%)", detail,
+                    show_start, show_resume, show_pause, show_reload)
+        if phase == PHASE_DONE and total > 0:
+            return (dbc.Badge("已完成", color="success", className="me-2"),
+                    100, f"{total}/{total} (100%)",
+                    f"共处理 {total} 个标的（成功 {done}，失败 {failed}），数据就绪",
+                    show_start, show_resume, show_pause, show_reload)
+        if phase == PHASE_PAUSED:
+            return (dbc.Badge("已暂停", color="warning", className="me-2"),
+                    int(done * 100 / max(total, 1)), f"{done}/{total}",
+                    f"已暂停，可「继续」断点续传（待处理 {pending}）",
+                    show_start, show_resume, show_pause, show_reload)
+        if phase == PHASE_ERROR:
+            return (dbc.Badge("出错", color="danger", className="me-2"),
+                    0, "错误", state.get("message", "加载过程发生错误"),
+                    show_start, show_resume, show_pause, show_reload)
+        # idle
+        return (dbc.Badge("空闲", color="secondary", className="me-2"),
+                0, "0%", "自动加载未运行，请点击「开始自动加载」",
+                show_start, show_resume, show_pause, show_reload)
 
     @app.callback(
         Output("fetch-progress-bar", "value"),
@@ -336,29 +364,50 @@ def register_data_center_callbacks(app):
         return pct, f"{current}/{total} ({pct}%)"
 
     @app.callback(
-        Output("auto-load-action-feedback", "children"),
-        Output("auto-load-start-btn", "disabled", allow_duplicate=True),
-        Output("auto-load-pause-btn", "disabled", allow_duplicate=True),
-        Input("auto-load-start-btn", "n_clicks"),
-        Input("auto-load-pause-btn", "n_clicks"),
+        Output("auto-load-reload-modal", "is_open"),
+        Input("auto-load-reload-btn", "n_clicks"),
+        Input("auto-load-reload-cancel", "n_clicks"),
+        Input("auto-load-reload-confirm", "n_clicks"),
         prevent_initial_call=True,
     )
-    def handle_auto_load_action(start_clicks, pause_clicks):
+    def toggle_reload_modal(reload_clicks, cancel_clicks, confirm_clicks):
         if not ctx.triggered:
             return no_update
-        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        tid = ctx.triggered[0]["prop_id"].split(".")[0]
+        if tid == "auto-load-reload-btn":
+            return True
+        return False
+
+    @app.callback(
+        Output("auto-load-action-feedback", "children"),
+        Input("auto-load-start-btn", "n_clicks"),
+        Input("auto-load-resume-btn", "n_clicks"),
+        Input("auto-load-pause-btn", "n_clicks"),
+        Input("auto-load-reload-confirm", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def handle_auto_load_action(start_clicks, resume_clicks, pause_clicks, reload_confirm_clicks):
+        if not ctx.triggered:
+            return no_update
+        tid = ctx.triggered[0]["prop_id"].split(".")[0]
         try:
             svc = get_auto_load_service()
-            if trigger_id == "auto-load-start-btn":
-                svc.reset_load()
-                svc.start_background_load()
-                return "自动加载已启动，请查看进度...", True, False
-            else:
-                svc.set_status("phase", "idle")
-                return "自动加载已暂停", False, True
+            if tid == "auto-load-start-btn":
+                svc.start()
+                return "自动加载已启动（基于数据库已有历史数据规划），请查看进度..."
+            if tid == "auto-load-resume-btn":
+                svc.resume()
+                return "已从断点继续加载..."
+            if tid == "auto-load-pause-btn":
+                svc.pause()
+                return "自动加载已暂停，可稍后「继续」"
+            if tid == "auto-load-reload-confirm":
+                svc.reload()
+                return "已重新规划加载（历史数据保留），请查看进度..."
         except Exception as e:
             logger.error("auto-load action failed: %s", e)
-            return f"操作失败: {e}", False, False
+            return f"操作失败: {e}"
+        return no_update
 
 
 def _create_advanced_tab():

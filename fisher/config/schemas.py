@@ -29,10 +29,21 @@ class LoggingConfig(BaseModel):
     modules: dict[str, str] = {"strategy": "DEBUG", "risk": "INFO", "market": "WARNING"}
 
 
+class SearchConfig(BaseModel):
+    """标的搜索 V1.2 配置（PRD §7 埋点 / §11 回滚）。
+
+    - legacy: True 时回退旧的 symbol_cache + 实时 akshare 搜索链路（R-50 回滚开关）。
+    - dict_refresh_time: 标的字典后台刷新时刻（交易日，HH:MM，R-13）。
+    """
+    legacy: bool = False
+    dict_refresh_time: str = "08:30"
+
+
 class SystemConfig(BaseModel):
     mode: RunMode = RunMode.PAPER
     event: EventConfig = EventConfig()
     logging: LoggingConfig = LoggingConfig()
+    search: SearchConfig = SearchConfig()
 
 
 class RefreshConfig(BaseModel):

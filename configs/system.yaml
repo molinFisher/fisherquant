@@ -14,3 +14,10 @@ logging:
     strategy: DEBUG
     risk: INFO
     market: WARNING
+
+# 标的搜索 V1.2（PRD §7 埋点 / §11 回滚）
+search:
+  # true 时回退旧的 symbol_cache + 实时 akshare 搜索链路（R-50 应急回滚开关）
+  legacy: false
+  # 标的字典后台刷新时刻（交易日 08:30，R-13）
+  dict_refresh_time: "08:30"

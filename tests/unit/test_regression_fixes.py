@@ -201,10 +201,16 @@ class TestEmptyNameValidation:
 # ---------------------------------------------------------------------------
 
 class TestSearchResultsPropagation:
-    def test_search_preserves_existing_value(self, data_service, mock_akshare):
+    def test_search_preserves_existing_value(self, data_service):
+        # V1.2：新搜索只读 symbol_dict，value 为标准化 ticker
+        data_service._legacy_search = False
+        data_service._db.execute(
+            "INSERT INTO symbol_dict (ticker, code, name, market, pinyin_abbr) "
+            "VALUES ('600519.SH','600519','贵州茅台','a_share','GZMT')"
+        )
         results = data_service.search_symbols("600519")
         assert len(results) > 0
-        assert results[0]["value"] == "600519"
+        assert results[0]["value"] == "600519.SH"
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +241,15 @@ def in_memory_db(tmp_path):
             ticker VARCHAR, bar_time TIMESTAMP, open DOUBLE, high DOUBLE, low DOUBLE,
             close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
             PRIMARY KEY (ticker, bar_time)
+        )
+    """)
+    # 标的搜索 V1.2：只读标的字典表（R-10），get_cached_table LEFT JOIN 依赖
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_dict (
+            ticker VARCHAR NOT NULL, code VARCHAR NOT NULL, name VARCHAR NOT NULL,
+            market VARCHAR NOT NULL, pinyin_full VARCHAR DEFAULT '',
+            pinyin_abbr VARCHAR DEFAULT '', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ticker)
         )
     """)
     yield db

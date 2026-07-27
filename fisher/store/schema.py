@@ -1,6 +1,42 @@
 from .engine import DuckDBEngine
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
+
+# 标的搜索 V1.2（PRD FR-4.x）：只读标的字典表，替代旧 symbol_cache。
+# - ticker 为标准化主键（600519.SH / 00700.HK，港股零填充 5 位，见 R-01）
+# - pinyin_full / pinyin_abbr 由刷新服务离线生成（R-14），搜索链路只读
+# - updated_at 用于展示"字典更新时间"统计条（FR-3.x）
+_SYMBOL_DICT_DDL = """
+    CREATE TABLE IF NOT EXISTS symbol_dict (
+        ticker VARCHAR NOT NULL,
+        code VARCHAR NOT NULL,
+        name VARCHAR NOT NULL,
+        market VARCHAR NOT NULL,
+        pinyin_full VARCHAR DEFAULT '',
+        pinyin_abbr VARCHAR DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ticker)
+    )
+"""
+
+# 自动加载 V1.3（PRD FR-2.x）：标的级状态账本，DB as Source of Truth 的续传定位键。
+# - ticker 为主键（替代旧版基于位置索引的游标）
+# - session_id 标识一次加载会话（开始/重新加载生成新会话；继续复用旧会话）
+# - plan ∈ {FULL, GAP, SKIP}，status ∈ {pending, loading, done, failed}
+# - gap_start 为缺口起点（GAP 补 `MAX(trade_date)+1 ~ 今天`）；attempts/last_error 支撑失败重试
+_SYMBOL_LOAD_STATE_DDL = """
+    CREATE TABLE IF NOT EXISTS symbol_load_state (
+        ticker VARCHAR NOT NULL,
+        session_id VARCHAR NOT NULL,
+        plan VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        gap_start DATE,
+        attempts INTEGER DEFAULT 0,
+        last_error VARCHAR,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ticker)
+    )
+"""
 
 _TABLES = [
     """
@@ -108,6 +144,8 @@ _TABLES = [
         PRIMARY KEY (ticker, event_date, event_type)
     )
     """,
+    _SYMBOL_DICT_DDL,
+    _SYMBOL_LOAD_STATE_DDL,
 ]
 
 
@@ -127,6 +165,18 @@ _MIGRATIONS: dict[int, list[str]] = {
     2: [
         "ALTER TABLE bars_daily ADD COLUMN IF NOT EXISTS turnover DOUBLE DEFAULT 0.0",
         "ALTER TABLE bars_minute ADD COLUMN IF NOT EXISTS turnover DOUBLE DEFAULT 0.0",
+    ],
+    # V1.2 标的搜索：新增 symbol_dict（R-10）。旧 symbol_cache 保留不删，
+    # 供 legacy 回滚开关（R-50）使用；待 V1.2 稳定后再由后续版本清理。
+    3: [
+        _SYMBOL_DICT_DDL,
+    ],
+    # V1.3 自动加载：新增 symbol_load_state 账本表（R-01）。
+    # 注意：生产启动路径只调用 init_schema()（见 services/__init__.py:get_db），
+    # 不会调用本 migrate()，故该表已同时加入 _TABLES 以保证新建库即时建表；
+    # 本条目保留用于显式迁移工具 / 历史库升级。
+    4: [
+        _SYMBOL_LOAD_STATE_DDL,
     ],
 }
 

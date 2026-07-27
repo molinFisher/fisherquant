@@ -1,8 +1,17 @@
 import logging
+import time
 import akshare as ak
 from ...store.engine import DuckDBManager
 from ...market.rate_limiter import RateLimiter
 from .models import resolve_ticker
+from .symbol_search import (
+    normalize_query,
+    escape_like,
+    code_variants,
+    to_pinyin,
+    rank_results,
+    MAX_RESULTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +20,176 @@ class DataCenterService:
     def __init__(self, db: DuckDBManager, limiter: RateLimiter):
         self._db = db
         self._limiter = limiter
+        self._legacy_search: bool | None = None
 
+    # ------------------------------------------------------------------ #
+    # R-50 回滚开关：读取 configs/system.yaml 的 search.legacy（缓存一次）
+    # ------------------------------------------------------------------ #
+    def _use_legacy_search(self) -> bool:
+        if self._legacy_search is None:
+            try:
+                from ...config.loader import ConfigLoader
+                cfg, _ = ConfigLoader.safe_load("configs")
+                self._legacy_search = bool(cfg.system.search.legacy)
+            except Exception as e:
+                logger.debug("读取 search.legacy 失败，默认走新链路: %s", e)
+                self._legacy_search = False
+        return self._legacy_search
+
+    # ------------------------------------------------------------------ #
+    # R-11 / R-12：标的字典全量刷新 + 单事务原子替换（后台调度调用）
+    # ------------------------------------------------------------------ #
+    def refresh_symbol_dict(self) -> dict:
+        """全量刷新 symbol_dict：拉取 A 股 + 港股通清单，离线生成拼音，
+        在单事务内原子替换（DELETE + 批量 INSERT）；失败自动回滚并保留旧字典。
+
+        返回统计 dict：{a_share, hk_connect, total, elapsed_ms, replaced}。
+        """
+        t0 = time.time()
+        rows: list[list] = []
+        a_count = 0
+        hk_count = 0
+
+        # A 股清单：stock_info_a_code_name() -> columns ['code','name']
+        try:
+            self._limiter.acquire()
+            df_a = ak.stock_info_a_code_name()
+            for code, name in df_a[["code", "name"]].itertuples(index=False, name=None):
+                code = str(code).strip()
+                name = str(name).strip()
+                if not code or not name:
+                    continue
+                ticker = resolve_ticker(code, "a_share")
+                py_full, py_abbr = to_pinyin(name)
+                rows.append([ticker, code, name, "a_share", py_full, py_abbr])
+                a_count += 1
+        except Exception as e:
+            logger.error("refresh_symbol_dict: A股清单拉取失败: %s", e)
+
+        # 港股通成分：stock_hk_ggt_components_em() -> ['序号','代码','名称',...]
+        # 注意：中文列名无法用具名 itertuples，需按列取值组成纯元组。
+        try:
+            self._limiter.acquire()
+            df_hk = ak.stock_hk_ggt_components_em()
+            for code, name in df_hk[["代码", "名称"]].itertuples(index=False, name=None):
+                code = str(code).strip()
+                name = str(name).strip()
+                if not code or not name:
+                    continue
+                ticker = resolve_ticker(code, "hk_connect")
+                py_full, py_abbr = to_pinyin(name)
+                rows.append([ticker, code, name, "hk_connect", py_full, py_abbr])
+                hk_count += 1
+        except Exception as e:
+            logger.error("refresh_symbol_dict: 港股通清单拉取失败: %s", e)
+
+        if not rows:
+            logger.warning("refresh_symbol_dict: 未获取到任何标的，保留旧字典不替换")
+            return {"a_share": 0, "hk_connect": 0, "total": 0,
+                    "elapsed_ms": int((time.time() - t0) * 1000), "replaced": False}
+
+        # R-12 原子替换：单事务 DELETE + executemany INSERT，异常回滚保留旧数据
+        try:
+            with self._db.transaction() as conn:
+                conn.execute("DELETE FROM symbol_dict")
+                conn.executemany(
+                    "INSERT INTO symbol_dict "
+                    "(ticker, code, name, market, pinyin_full, pinyin_abbr) "
+                    "VALUES (?,?,?,?,?,?)",
+                    rows,
+                )
+        except Exception as e:
+            logger.error("refresh_symbol_dict: 原子替换失败，已回滚，旧字典保留: %s", e)
+            return {"a_share": a_count, "hk_connect": hk_count, "total": len(rows),
+                    "elapsed_ms": int((time.time() - t0) * 1000), "replaced": False}
+
+        elapsed = int((time.time() - t0) * 1000)
+        logger.info(
+            "symbol_dict 刷新完成 a_share=%d hk_connect=%d total=%d elapsed_ms=%d",
+            a_count, hk_count, len(rows), elapsed,
+        )
+        return {"a_share": a_count, "hk_connect": hk_count, "total": len(rows),
+                "elapsed_ms": elapsed, "replaced": True}
+
+    # ------------------------------------------------------------------ #
+    # R-02 冷启动状态判定：字典为空 => 初始化中（供 UI 展示"初始化中"而非"未找到"）
+    # ------------------------------------------------------------------ #
+    def symbol_dict_ready(self) -> bool:
+        """标的字典是否已就绪（存在至少一条记录）。
+
+        用于区分冷启动初始化中（字典为空）与正常无匹配两种空结果状态。
+        查询失败（表未建等）按未就绪处理。
+        """
+        try:
+            df = self._db.query_df("SELECT COUNT(*) AS c FROM symbol_dict")
+            return len(df) > 0 and int(df["c"][0]) > 0
+        except Exception as e:
+            logger.debug("symbol_dict_ready 查询失败，按未就绪处理: %s", e)
+            return False
+
+    # ------------------------------------------------------------------ #
+    # R-20~R-24：标的搜索（只读 symbol_dict，三路匹配 + 排序截断）
+    # ------------------------------------------------------------------ #
     def search_symbols(self, query: str) -> list[dict]:
+        """标的搜索主入口（PRD FR-1.x）。
+
+        新链路只读 symbol_dict，不触发任何实时 akshare 调用；R-50 legacy=true
+        时回退旧的 symbol_cache + 实时搜索。返回结构化 dict 列表（含 code/name/
+        market/pinyin_abbr），供下拉展示与选中卡片回填使用。
+        """
+        if self._use_legacy_search():
+            return self._search_symbols_legacy(query)
+
+        nq = normalize_query(query)          # R-20 归一化
+        if len(nq) < 2:
+            return []
+        variants = code_variants(nq)         # R-21/R-01 零填充变体
+        esc = escape_like(nq)                # R-22 LIKE 通配符转义
+        like = f"%{esc}%"
+
+        try:
+            df = self._db.query_df(
+                "SELECT ticker, code, name, market, pinyin_full, pinyin_abbr "
+                "FROM symbol_dict WHERE "
+                "UPPER(code) LIKE ? ESCAPE '\\' "
+                "OR UPPER(name) LIKE ? ESCAPE '\\' "
+                "OR UPPER(pinyin_full) LIKE ? ESCAPE '\\' "
+                "OR UPPER(pinyin_abbr) LIKE ? ESCAPE '\\' "
+                "LIMIT 200",
+                [like, like, like, like],
+            )
+        except Exception as e:
+            logger.error("search_symbols 查询失败 q=%r: %s", nq, e)
+            return []
+
+        rows = df.to_dicts() if len(df) > 0 else []
+        if not rows:
+            logger.info("search q=%r matched=0 returned=0", nq)  # R-40 埋点
+            return []
+
+        ranked = rank_results(rows, nq, variants, MAX_RESULTS)  # R-23 排序截断
+        out = []
+        for r in ranked:
+            market_tag = "A股" if r.get("market") == "a_share" else "港股通"
+            abbr = (r.get("pinyin_abbr") or "").strip()
+            label = f"[{market_tag}] {r['code']}  {r['name']}"
+            if abbr:
+                label += f"  ·{abbr}"
+            out.append({
+                "label": label,
+                "value": r["ticker"],
+                "code": r["code"],
+                "name": r["name"],
+                "market": r["market"],
+                "pinyin_abbr": abbr,
+            })
+        logger.info("search q=%r matched=%d returned=%d", nq, len(rows), len(out))  # R-40
+        return out
+
+    # ------------------------------------------------------------------ #
+    # R-50：旧搜索链路（保留以便回滚），仅当 search.legacy=true 时启用
+    # ------------------------------------------------------------------ #
+    def _search_symbols_legacy(self, query: str) -> list[dict]:
         if not query or len(query) < 2:
             return []
         results = []
@@ -143,23 +320,27 @@ class DataCenterService:
             return {"total": 0, "a_share": 0, "hk": 0, "records": 0, "last_update": ""}
 
     def get_cached_table(self, market_filter: str = "all", text_filter: str = "") -> list[dict]:
+        # R-33：LEFT JOIN symbol_dict 带出名称列，过滤支持代码或名称。
         try:
             parts = [
-                "SELECT ticker, market, COUNT(*) as records,",
-                "MIN(trade_date) as start_date, MAX(trade_date) as end_date",
-                "FROM bars_daily",
+                "SELECT b.ticker AS ticker, COALESCE(NULLIF(s.name, ''), '—') AS name,",
+                "b.market AS market, COUNT(*) AS records,",
+                "MIN(b.trade_date) AS start_date, MAX(b.trade_date) AS end_date",
+                "FROM bars_daily b",
+                "LEFT JOIN symbol_dict s ON s.ticker = b.ticker",
             ]
             params = []
             clauses = []
             if market_filter != "all":
-                clauses.append("market=?")
+                clauses.append("b.market = ?")
                 params.append(market_filter)
             if text_filter and text_filter.strip():
-                clauses.append("(ticker LIKE ?)")
-                params.append(f"%{text_filter.strip()}%")
+                esc = escape_like(text_filter.strip())
+                clauses.append("(b.ticker LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\')")
+                params.extend([f"%{esc}%", f"%{esc}%"])
             if clauses:
                 parts.append("WHERE " + " AND ".join(clauses))
-            parts.append("GROUP BY ticker, market ORDER BY ticker")
+            parts.append("GROUP BY b.ticker, s.name, b.market ORDER BY b.ticker")
             df = self._db.query_df(" ".join(parts), params)
             return df.to_dicts() if len(df) > 0 else []
         except Exception as e:

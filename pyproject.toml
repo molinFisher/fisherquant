@@ -22,6 +22,7 @@ dependencies = [
     "dash>=2.6",
     "dash-bootstrap-components",
     "diskcache",
+    "pypinyin",
 ]
 
 [project.optional-dependencies]

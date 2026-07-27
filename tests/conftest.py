@@ -34,8 +34,44 @@ def in_memory_db(tmp_path):
             PRIMARY KEY (ticker, bar_time)
         )
     """)
+    # 标的搜索 V1.2：只读标的字典表（R-10）
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_dict (
+            ticker VARCHAR NOT NULL,
+            code VARCHAR NOT NULL,
+            name VARCHAR NOT NULL,
+            market VARCHAR NOT NULL,
+            pinyin_full VARCHAR DEFAULT '',
+            pinyin_abbr VARCHAR DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ticker)
+        )
+    """)
     yield db
     DuckDBManager._instance = None
+
+
+# 标的字典样本（供搜索单测）：贵州茅台 / 平安银行 / 宁德时代 / 腾讯控股 / 中国移动
+_SYMBOL_DICT_ROWS = [
+    ("600519.SH", "600519", "贵州茅台", "a_share", "GUIZHOUMAOTAI", "GZMT"),
+    ("000001.SZ", "000001", "平安银行", "a_share", "PINGANYINHANG", "PAYH"),
+    ("300750.SZ", "300750", "宁德时代", "a_share", "NINGDESHIDAI", "NDSD"),
+    ("00700.HK", "00700", "腾讯控股", "hk_connect", "TENGXUNKONGGU", "TXKG"),
+    ("00941.HK", "00941", "中国移动", "hk_connect", "ZHONGGUOYIDONG", "ZGYD"),
+]
+
+
+@pytest.fixture
+def seeded_dict_service(in_memory_db, limiter):
+    """已灌入样本 symbol_dict 且强制走新搜索链路（legacy=False）的服务。"""
+    in_memory_db.execute_many(
+        "INSERT INTO symbol_dict (ticker, code, name, market, pinyin_full, pinyin_abbr) "
+        "VALUES (?,?,?,?,?,?)",
+        [list(r) for r in _SYMBOL_DICT_ROWS],
+    )
+    svc = DataCenterService(in_memory_db, limiter)
+    svc._legacy_search = False
+    return svc
 
 
 @pytest.fixture
