@@ -38,7 +38,7 @@ def create_home_layout():
                             dbc.CardBody([
                                 html.H6("港股", className="text-muted"),
                                 html.H3("0", id="stat-hk-count", className="text-info"),
-                                html.Small("港股通", className="text-muted"),
+                                html.Small("港股", className="text-muted"),
                             ]),
                             className="stat-card",
                         ),

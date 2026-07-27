@@ -31,11 +31,11 @@ def _mock_sources(monkeypatch, a_rows, hk_rows):
 
     def _hk():
         return pd.DataFrame(
-            [{"序号": i + 1, "代码": c, "名称": n} for i, (c, n) in enumerate(hk_rows)]
+            [{"代码": c, "中文名称": n} for c, n in hk_rows]
         )
 
     monkeypatch.setattr(ak, "stock_info_a_code_name", _a, raising=False)
-    monkeypatch.setattr(ak, "stock_hk_ggt_components_em", _hk, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_spot", _hk, raising=False)
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ def test_refresh_empty_sources_keeps_old(svc_new, monkeypatch):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(ak, "stock_info_a_code_name", _boom, raising=False)
-    monkeypatch.setattr(ak, "stock_hk_ggt_components_em", _boom, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_spot", _boom, raising=False)
     stat = svc_new.refresh_symbol_dict()
     assert stat["replaced"] is False
     assert svc_new.search_symbols("600519")             # 旧字典仍在

@@ -49,7 +49,7 @@ def register_data_callbacks(app):
         status = html.Span(
             [
                 html.Span(f"找到 {len(matches)} 个结果", className="text-success me-2"),
-                html.Small(f"A股 {a_n} · 港股通 {hk_n}", className="text-muted"),
+                html.Small(f"A股 {a_n} · 港股 {hk_n}", className="text-muted"),
             ]
         )
         return options, None, status, matches
@@ -140,7 +140,7 @@ def register_data_callbacks(app):
         if not item:
             return html.Div([html.Strong("已选择："), html.Span(str(selected_symbol))])
 
-        market_tag = "A股" if item.get("market") == "a_share" else "港股通"
+        market_tag = "A股" if item.get("market") == "a_share" else "港股"
         badge_color = "danger" if item.get("market") == "a_share" else "info"
         abbr = (item.get("pinyin_abbr") or "").strip()
         header = [

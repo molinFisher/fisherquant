@@ -104,8 +104,8 @@ def test_uat_04_hk_connect_hit(uat_service, q):
     hit = next((r for r in res if r["value"] == "00700.HK"), None)
     assert hit is not None, f"输入 {q!r} 应命中 00700.HK"
     assert hit["name"] == "腾讯控股"
-    assert hit["market"] == "hk_connect"          # 港股通徽章数据契约
-    assert "港股通" in hit["label"]
+    assert hit["market"] == "hk_connect"          # 港股徽章数据契约
+    assert "港股" in hit["label"]
 
 
 # UAT-5：minimax（非上市）→ 空结果 + 引导文案，无报错/无静默丢结果
@@ -163,7 +163,7 @@ def test_uat_09_missing_name_placeholder(uat_service):
     assert uat_service.delete_symbols(["900999.SH"]) == 1
 
 
-# UAT-10：字典刷新 —— 批量写入成功、来源为 stock_hk_ggt_components_em、耗时达标
+# UAT-10：字典刷新 —— 批量写入成功、港股来源为 stock_hk_spot（与自动加载宇宙同源自洽）、耗时达标
 def test_uat_10_refresh_source_and_budget(in_memory_db, limiter, monkeypatch):
     import akshare as ak
     called = {"ggt": False, "spot": False}
@@ -177,7 +177,7 @@ def test_uat_10_refresh_source_and_budget(in_memory_db, limiter, monkeypatch):
 
     def _spot(*a, **k):
         called["spot"] = True
-        return pd.DataFrame(columns=["代码", "名称"])
+        return pd.DataFrame([{"代码": "00700", "中文名称": "腾讯控股"}])
 
     monkeypatch.setattr(ak, "stock_info_a_code_name", _a, raising=False)
     monkeypatch.setattr(ak, "stock_hk_ggt_components_em", _ggt, raising=False)
@@ -186,16 +186,30 @@ def test_uat_10_refresh_source_and_budget(in_memory_db, limiter, monkeypatch):
     svc = DataCenterService(in_memory_db, limiter)
     stat = svc.refresh_symbol_dict()
     assert stat["replaced"] is True and stat["total"] == 2
-    assert called["ggt"] is True          # 港股通来源正确
-    assert called["spot"] is False        # 不再使用全量港股快照
+    assert called["spot"] is True         # 港股来源为全量快照 stock_hk_spot
+    assert called["ggt"] is False         # 不再依赖易失败的港股通成分接口
     assert stat["elapsed_ms"] < 3000      # PRD FR-2.3 ≤ 3s（小样本远低于）
 
 
-# UAT-11：港股通范围核对 —— 非港股通港股不出现在结果中
-def test_uat_11_hk_scope_only_ggt(uat_service):
-    for code in _NON_GGT_HK:
-        res = uat_service.search_symbols(code)
-        assert all(r["value"] != f"{code}.HK" for r in res), \
-            f"非港股通 {code} 不应出现在结果中"
-    # 反向确认：港股通成分确实可搜到
-    assert uat_service.search_symbols("00941")
+# UAT-11：港股范围核对 —— 字典覆盖全部港股（含非港股通），均可搜到
+def test_uat_11_hk_scope_all_market(in_memory_db, limiter, monkeypatch):
+    import akshare as ak
+
+    def _a():
+        return pd.DataFrame([("600519", "贵州茅台")], columns=["code", "name"])
+
+    def _spot(*a, **k):
+        # 同时含港股通成分（00941）与非港股通港股（08000），验证全港股覆盖
+        return pd.DataFrame([
+            {"代码": "00941", "中文名称": "中国移动"},
+            {"代码": "08000", "中文名称": "非港股通港股"},
+        ])
+
+    monkeypatch.setattr(ak, "stock_info_a_code_name", _a, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_spot", _spot, raising=False)
+    svc = DataCenterService(in_memory_db, limiter)
+    svc.refresh_symbol_dict()
+    # 港股通成分可搜到
+    assert svc.search_symbols("00941")
+    # 非港股通港股也覆盖在字典中，可搜到
+    assert any(r["value"] == "08000.HK" for r in svc.search_symbols("08000"))

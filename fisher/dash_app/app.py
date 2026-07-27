@@ -82,6 +82,14 @@ def init_on_startup():
                 daemon=True,
             ).start()
             logger.info("标的字典为空，已触发冷启动后台刷新")
+
+        # 存量修复：已缓存港股若缺名称（如刷新时港股通接口失败被 A 股覆盖），
+        # 启动时补全，与字典是否为空无关（幂等，无缺失则立即返回）。
+        threading.Thread(
+            target=data_svc.backfill_hk_names, name="hk_names_backfill",
+            daemon=True,
+        ).start()
+        logger.info("已触发港股名称存量补全（后台）")
     except Exception as e:
         logger.error("标的字典刷新调度初始化失败: %s", e)
 

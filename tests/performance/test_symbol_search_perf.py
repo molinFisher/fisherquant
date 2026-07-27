@@ -85,9 +85,9 @@ def test_full_refresh_within_budget(in_memory_db, limiter, monkeypatch):
     a_df = pd.DataFrame(
         [(f"{600000 + i:06d}", f"公司{i}") for i in range(N_A)], columns=["code", "name"])
     hk_df = pd.DataFrame(
-        [{"序号": i, "代码": f"{i:05d}", "名称": f"港股{i}"} for i in range(N_HK)])
+        [{"代码": f"{i:05d}", "中文名称": f"港股{i}"} for i in range(N_HK)])
     monkeypatch.setattr(ak, "stock_info_a_code_name", lambda: a_df, raising=False)
-    monkeypatch.setattr(ak, "stock_hk_ggt_components_em", lambda: hk_df, raising=False)
+    monkeypatch.setattr(ak, "stock_hk_spot", lambda: hk_df, raising=False)
 
     svc = DataCenterService(in_memory_db, limiter)
     stat = svc.refresh_symbol_dict()

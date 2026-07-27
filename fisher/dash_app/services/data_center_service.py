@@ -40,13 +40,15 @@ class DataCenterService:
     # R-11 / R-12：标的字典全量刷新 + 单事务原子替换（后台调度调用）
     # ------------------------------------------------------------------ #
     def refresh_symbol_dict(self) -> dict:
-        """全量刷新 symbol_dict：拉取 A 股 + 港股通清单，离线生成拼音，
-        在单事务内原子替换（DELETE + 批量 INSERT）；失败自动回滚并保留旧字典。
+        """全量刷新 symbol_dict：拉取 A 股 + 港股清单，离线生成拼音，
+        按市场分事务原子替换（各自 DELETE + 批量 INSERT）；某一市场拉取失败时
+        不影响另一市场已写入的数据，避免「港股失败 → 整个字典被 A 股覆盖清空」。
 
         返回统计 dict：{a_share, hk_connect, total, elapsed_ms, replaced}。
         """
         t0 = time.time()
-        rows: list[list] = []
+        a_rows: list[list] = []
+        hk_rows: list[list] = []
         a_count = 0
         hk_count = 0
 
@@ -61,66 +63,125 @@ class DataCenterService:
                     continue
                 ticker = resolve_ticker(code, "a_share")
                 py_full, py_abbr = to_pinyin(name)
-                rows.append([ticker, code, name, "a_share", py_full, py_abbr])
+                a_rows.append([ticker, code, name, "a_share", py_full, py_abbr])
                 a_count += 1
         except Exception as e:
             logger.error("refresh_symbol_dict: A股清单拉取失败: %s", e)
 
-        # 港股通成分：stock_hk_ggt_components_em() -> ['序号','代码','名称',...]
-        # 注意：中文列名无法用具名 itertuples，需按列取值组成纯元组。
+        # 港股清单：stock_hk_spot() -> ['日期时间','代码','中文名称','英文名称',...]
+        # 与自动加载宇宙（stock_hk_spot().head(80)）同源，保证缓存的港股都能查到名称。
+        # 旧实现用 stock_hk_ggt_components_em()（港股通成分），该接口易失败，
+        # 失败后整表被 A 股覆盖导致港股名称全部丢失（见 issue 港股无名称）。
         try:
             self._limiter.acquire()
-            df_hk = ak.stock_hk_ggt_components_em()
-            for code, name in df_hk[["代码", "名称"]].itertuples(index=False, name=None):
-                code = str(code).strip()
-                name = str(name).strip()
-                if not code or not name:
-                    continue
-                ticker = resolve_ticker(code, "hk_connect")
-                py_full, py_abbr = to_pinyin(name)
-                rows.append([ticker, code, name, "hk_connect", py_full, py_abbr])
-                hk_count += 1
+            df_hk = ak.stock_hk_spot()
+            code_col = "代码"
+            name_col = "中文名称" if "中文名称" in df_hk.columns else \
+                next((c for c in df_hk.columns if "名称" in str(c)), None)
+            if name_col is not None:
+                for code, name in df_hk[[code_col, name_col]].itertuples(index=False, name=None):
+                    code = str(code).strip().zfill(5)
+                    name = str(name).strip()
+                    if not code or not name:
+                        continue
+                    ticker = resolve_ticker(code, "hk_connect")
+                    py_full, py_abbr = to_pinyin(name)
+                    hk_rows.append([ticker, code, name, "hk_connect", py_full, py_abbr])
+                    hk_count += 1
         except Exception as e:
-            logger.error("refresh_symbol_dict: 港股通清单拉取失败: %s", e)
+            logger.error("refresh_symbol_dict: 港股清单拉取失败: %s", e)
 
-        if not rows:
+        if not a_rows and not hk_rows:
             logger.warning("refresh_symbol_dict: 未获取到任何标的，保留旧字典不替换")
             return {"a_share": 0, "hk_connect": 0, "total": 0,
                     "elapsed_ms": int((time.time() - t0) * 1000), "replaced": False}
 
-        # 去重：A股/港股清单偶发含重复代码（akshare 接口脏数据），
-        # 重复 ticker 会导致 INSERT 主键冲突并让原子替换整体回滚（旧字典被保留），
-        # 与自动加载账本重复键同源。按 ticker 去重，保留首次出现。
-        _seen: set[str] = set()
-        _deduped: list[list] = []
-        for _r in rows:
-            if _r[0] not in _seen:
-                _seen.add(_r[0])
-                _deduped.append(_r)
-        rows = _deduped
+        replaced = False
 
-        # R-12 原子替换：单事务 DELETE + executemany INSERT，异常回滚保留旧数据
+        # 按市场分事务原子替换：某市场无数据（拉取失败）则跳过其 DELETE，保留旧数据。
+        def _replace_market(market: str, rows: list[list]):
+            nonlocal replaced
+            if not rows:
+                return
+            # 去重：重复 ticker 会导致 INSERT 主键冲突；按 ticker 去重，保留首次出现。
+            _seen: set[str] = set()
+            _deduped: list[list] = []
+            for _r in rows:
+                if _r[0] not in _seen:
+                    _seen.add(_r[0])
+                    _deduped.append(_r)
+            try:
+                with self._db.transaction() as conn:
+                    conn.execute("DELETE FROM symbol_dict WHERE market = ?", [market])
+                    conn.executemany(
+                        "INSERT INTO symbol_dict "
+                        "(ticker, code, name, market, pinyin_full, pinyin_abbr) "
+                        "VALUES (?,?,?,?,?,?)",
+                        _deduped,
+                    )
+                replaced = True
+            except Exception as e:
+                logger.error("refresh_symbol_dict: %s 原子替换失败，已回滚，旧数据保留: %s",
+                             market, e)
+
+        _replace_market("a_share", a_rows)
+        _replace_market("hk_connect", hk_rows)
+
+        total = a_count + hk_count
+        elapsed = int((time.time() - t0) * 1000)
+        logger.info(
+            "symbol_dict 刷新完成 a_share=%d hk_connect=%d total=%d elapsed_ms=%d replaced=%s",
+            a_count, hk_count, total, elapsed, replaced,
+        )
+        return {"a_share": a_count, "hk_connect": hk_count, "total": total,
+                "elapsed_ms": elapsed, "replaced": replaced}
+
+    def backfill_hk_names(self) -> int:
+        """回填已缓存港股的名称：扫描 bars_daily 中缺失 symbol_dict 名称的港股标的，
+        从 stock_hk_spot 取名称并 upsert。用于修复「已缓存数据但港股无名称」的存量问题，
+        与刷新调度解耦，幂等可重复调用。返回成功补全的标的数量。
+        """
         try:
-            with self._db.transaction() as conn:
-                conn.execute("DELETE FROM symbol_dict")
-                conn.executemany(
-                    "INSERT INTO symbol_dict "
+            missing = self._db.query_df(
+                "SELECT DISTINCT b.ticker FROM bars_daily b "
+                "LEFT JOIN symbol_dict s ON s.ticker = b.ticker "
+                "WHERE b.market = 'hk_connect' AND s.ticker IS NULL"
+            )
+            tickers = [r["ticker"] for r in missing.iter_rows(named=True)]
+            if not tickers:
+                return 0
+            self._limiter.acquire()
+            df_hk = ak.stock_hk_spot()
+            code_col = "代码"
+            name_col = "中文名称" if "中文名称" in df_hk.columns else \
+                next((c for c in df_hk.columns if "名称" in str(c)), None)
+            if name_col is None:
+                return 0
+            name_map: dict[str, str] = {}
+            for code, name in df_hk[[code_col, name_col]].itertuples(index=False, name=None):
+                code = str(code).strip().zfill(5)
+                name = str(name).strip()
+                if code and name:
+                    name_map[f"{code}.HK"] = name
+            rows: list[list] = []
+            for t in tickers:
+                nm = name_map.get(t)
+                if not nm:
+                    continue
+                py_full, py_abbr = to_pinyin(nm)
+                rows.append([t, t.replace(".HK", ""), nm, "hk_connect", py_full, py_abbr])
+            if rows:
+                self._db.execute_many(
+                    "INSERT OR REPLACE INTO symbol_dict "
                     "(ticker, code, name, market, pinyin_full, pinyin_abbr) "
                     "VALUES (?,?,?,?,?,?)",
                     rows,
                 )
+            logger.info("backfill_hk_names: 补全 %d 个港股名称", len(rows))
+            return len(rows)
         except Exception as e:
-            logger.error("refresh_symbol_dict: 原子替换失败，已回滚，旧字典保留: %s", e)
-            return {"a_share": a_count, "hk_connect": hk_count, "total": len(rows),
-                    "elapsed_ms": int((time.time() - t0) * 1000), "replaced": False}
-
-        elapsed = int((time.time() - t0) * 1000)
-        logger.info(
-            "symbol_dict 刷新完成 a_share=%d hk_connect=%d total=%d elapsed_ms=%d",
-            a_count, hk_count, len(rows), elapsed,
-        )
-        return {"a_share": a_count, "hk_connect": hk_count, "total": len(rows),
-                "elapsed_ms": elapsed, "replaced": True}
+            logger.error("backfill_hk_names failed: %s", e)
+            return 0
 
     # ------------------------------------------------------------------ #
     # R-02 冷启动状态判定：字典为空 => 初始化中（供 UI 展示"初始化中"而非"未找到"）
@@ -181,7 +242,7 @@ class DataCenterService:
         ranked = rank_results(rows, nq, variants, MAX_RESULTS)  # R-23 排序截断
         out = []
         for r in ranked:
-            market_tag = "A股" if r.get("market") == "a_share" else "港股通"
+            market_tag = "A股" if r.get("market") == "a_share" else "港股"
             abbr = (r.get("pinyin_abbr") or "").strip()
             label = f"[{market_tag}] {r['code']}  {r['name']}"
             if abbr:

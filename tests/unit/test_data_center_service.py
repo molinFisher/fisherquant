@@ -81,12 +81,11 @@ class TestRefreshSymbolDict:
                                  "name": ["贵州茅台", "平安银行"]})
 
         def mock_hk(*a, **k):
-            return pd.DataFrame({"序号": [1, 2],
-                                 "代码": ["00700", "09988"],
-                                 "名称": ["腾讯控股", "阿里巴巴-W"]})
+            return pd.DataFrame({"代码": ["00700", "09988"],
+                                 "中文名称": ["腾讯控股", "阿里巴巴-W"]})
 
         monkeypatch.setattr(ak, "stock_info_a_code_name", mock_a, raising=False)
-        monkeypatch.setattr(ak, "stock_hk_ggt_components_em", mock_hk, raising=False)
+        monkeypatch.setattr(ak, "stock_hk_spot", mock_hk, raising=False)
 
     def test_refresh_populates_dict(self, data_service, mock_dict_sources):
         stats = data_service.refresh_symbol_dict()
@@ -126,7 +125,7 @@ class TestRefreshSymbolDict:
             raise RuntimeError("network down")
 
         monkeypatch.setattr(ak, "stock_info_a_code_name", boom, raising=False)
-        monkeypatch.setattr(ak, "stock_hk_ggt_components_em", boom, raising=False)
+        monkeypatch.setattr(ak, "stock_hk_spot", boom, raising=False)
         stats = data_service.refresh_symbol_dict()
         assert stats["replaced"] is False
         df = data_service._db.query_df("SELECT COUNT(*) AS c FROM symbol_dict")

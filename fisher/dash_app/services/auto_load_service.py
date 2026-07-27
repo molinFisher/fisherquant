@@ -11,6 +11,7 @@ import akshare as ak
 from ...store.engine import DuckDBManager
 from ...market.rate_limiter import RateLimiter
 from .models import resolve_ticker, AUTO_LOAD_CFG
+from .symbol_search import to_pinyin
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,24 @@ class AutoLoadService:
     def _increment_kv(self, key: str, delta: int):
         self._set_kv(key, str(int(self._get_kv(key, "0")) + delta))
 
+    def _upsert_symbol_names(self, rows: list[list]):
+        """INSERT OR REPLACE 到 symbol_dict（ticker,code,name,market,pinyin_full,pinyin_abbr）。
+
+        自动加载在缓存港股行情时，顺带把名称写入 symbol_dict（与刷新服务同源的
+        stock_hk_spot），保证缓存即可见名称，不依赖 refresh_symbol_dict 的调度时机。
+        """
+        if not rows:
+            return
+        try:
+            self._db.execute_many(
+                "INSERT OR REPLACE INTO symbol_dict "
+                "(ticker, code, name, market, pinyin_full, pinyin_abbr) "
+                "VALUES (?,?,?,?,?,?)",
+                rows,
+            )
+        except Exception as e:
+            logger.warning("upsert symbol names failed: %s", e)
+
     # ------------------------------------------------------------------ #
     # 计划生成引擎（FR-1.x）：扫描库存 → FULL/GAP/SKIP
     # ------------------------------------------------------------------ #
@@ -182,7 +201,7 @@ class AutoLoadService:
     # 会话管理（FR-2.x）：session_id + 清单快照 + 幽灵行清理
     # ------------------------------------------------------------------ #
     def _snapshot_universe(self) -> list[str]:
-        """当前加载宇宙：沪深300成分 + 港股通主要标的（与旧 _load_index_codes 口径一致）。
+        """当前加载宇宙：沪深300成分 + 港股主要标的（stock_hk_spot 前 80，与字典港股源同源）。
 
         去重：成分股清单偶发含重复 ticker（akshare 接口脏数据，如 600482.SH 出现两次），
         重复会导致账本 INSERT 主键冲突并让整个「开始」操作失败（见 issue 重复键）。
@@ -645,9 +664,23 @@ class AutoLoadService:
         try:
             hk_df = ak.stock_hk_spot()
             code_col = hk_df.columns[1]
+            # 名称列：优先「中文名称」，降级到任意含「名称」的列（与刷新服务口径一致）
+            if "中文名称" in hk_df.columns:
+                name_col = "中文名称"
+            else:
+                name_col = next((c for c in hk_df.columns if "名称" in str(c)), None)
+            hk_name_rows: list[list] = []
             for _, r in hk_df.head(80).iterrows():
                 raw_code = str(r[code_col]).zfill(5)
                 codes.append(f"{raw_code}.HK")
+                if name_col is not None:
+                    name = str(r[name_col]).strip()
+                    if name:
+                        py_full, py_abbr = to_pinyin(name)
+                        hk_name_rows.append(
+                            [f"{raw_code}.HK", raw_code, name, MARKET_HK, py_full, py_abbr])
+            # 顺带把名称写进 symbol_dict，缓存即可见（无需等待刷新调度）
+            self._upsert_symbol_names(hk_name_rows)
         except Exception as e:
             logger.warning("HK stock list fetch failed: %s", e)
         return codes
