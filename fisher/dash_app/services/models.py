@@ -83,4 +83,8 @@ AUTO_LOAD_CFG = {
     "incremental_batch_size": 20,
     "incremental_batch_interval": 10,
     "incremental_time": "16:30",
+    # P1 失败重试（FR-4.2）：单只最多尝试次数（含首轮=重试轮数+1）；退避序列长度=重试轮数。
+    # 二者均可在测试中通过 monkeypatch AUTO_LOAD_CFG 或 svc._retry_max_attempts / svc._retry_backoff 注入。
+    "retry_max_attempts": 4,
+    "retry_backoff": [5, 15, 60],
 }

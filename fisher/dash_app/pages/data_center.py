@@ -177,6 +177,24 @@ def _create_auto_load_tab():
                                         dbc.Progress(id="auto-load-progress-bar", value=0, label="0%",
                                                      className="mb-2", style={"height": "24px"}),
                                         html.Div(id="auto-load-progress-detail", className="text-muted small"),
+                                        # 失败清单（FR-4.3 / U-3）：可展开，含「重试失败项」按钮（独立 id）
+                                        dbc.Collapse(
+                                            dbc.Card(
+                                                dbc.CardBody(
+                                                    [
+                                                        html.Div("以下标的加载失败（可重试）：",
+                                                                 className="small mb-2"),
+                                                        dbc.ListGroup(id="auto-load-failed-list", flush=True),
+                                                        dbc.Button(
+                                                            "重试失败项", id="auto-load-retry-failed-btn",
+                                                            color="warning", size="sm", className="mt-2",
+                                                            style={"display": "none"}),
+                                                    ]
+                                                ),
+                                                className="mt-2 border-danger",
+                                            ),
+                                            id="auto-load-failed-collapse", is_open=False,
+                                        ),
                                     ]
                                 ),
                             ],
@@ -216,8 +234,15 @@ def _create_auto_load_tab():
                 [
                     dbc.ModalHeader(dbc.ModalTitle("确认重新加载？")),
                     dbc.ModalBody(
-                        "将清空当前加载账本并基于数据库已有历史数据重新规划（历史行情不会被删除）。"
-                        "正在进行的加载会先暂停。"
+                        [
+                            dbc.Checkbox(
+                                id="auto-load-force-full-check",
+                                label="彻底重下（忽略数据库已有历史，清空并全量重新下载）",
+                                value=False, className="mb-2",
+                            ),
+                            "将清空当前加载账本并基于数据库已有历史数据重新规划（历史行情不会被删除）。"
+                            "勾选「彻底重下」将忽略库存、全部标的重新下载。正在进行的加载会先暂停。",
+                        ]
                     ),
                     dbc.ModalFooter(
                         [
@@ -331,6 +356,11 @@ def register_data_center_callbacks(app):
                     pct, f"{done}/{total} ({pct}%)", detail,
                     show_start, show_resume, show_pause, show_reload)
         if phase == PHASE_DONE and total > 0:
+            if failed > 0:
+                return (dbc.Badge("部分失败", color="danger", className="me-2"),
+                        100, f"{done}/{total}",
+                        f"成功 {done}，失败 {failed} 个（可展开清单重试）",
+                        show_start, show_resume, show_pause, show_reload)
             return (dbc.Badge("已完成", color="success", className="me-2"),
                     100, f"{total}/{total} (100%)",
                     f"共处理 {total} 个标的（成功 {done}，失败 {failed}），数据就绪",
@@ -348,6 +378,46 @@ def register_data_center_callbacks(app):
         return (dbc.Badge("空闲", color="secondary", className="me-2"),
                 0, "0%", "自动加载未运行，请点击「开始自动加载」",
                 show_start, show_resume, show_pause, show_reload)
+
+    @app.callback(
+        Output("auto-load-failed-collapse", "is_open"),
+        Output("auto-load-failed-list", "children"),
+        Output("auto-load-retry-failed-btn", "style"),
+        Input("auto-load-progress-poll", "n_intervals"),
+    )
+    def update_auto_load_failed(n):
+        """失败清单轮询（FR-4.3）：有最终失败则展开 Collapse 并渲染清单 + 显示重试按钮。"""
+        try:
+            svc = get_auto_load_service()
+            state = svc.get_state()
+            failed = svc.get_failed() if int(state.get("failed", 0)) > 0 else []
+        except Exception as e:
+            logger.error("auto-load failed-list check failed: %s", e)
+            return False, [], {"display": "none"}
+        if not failed:
+            return False, [], {"display": "none"}
+        items = [
+            dbc.ListGroupItem(
+                [
+                    html.Span(f"{f['ticker']} {f['name']}", className="fw-bold"),
+                    html.Span(f" · {f['reason']} · 已重试 {f['attempts']} 次",
+                              className="text-muted small"),
+                ]
+            )
+            for f in failed
+        ]
+        return True, items, {"display": "block"}
+
+    @app.callback(
+        Output("auto-load-reload-confirm", "children"),
+        Output("auto-load-reload-confirm", "color"),
+        Input("auto-load-force-full-check", "value"),
+    )
+    def update_reload_confirm_label(force_full):
+        """「彻底重下」开关（#42）：勾选后确认按钮变红并提示全量重下。"""
+        if force_full:
+            return "清空并全量重下", "danger"
+        return "确认重新加载", "primary"
 
     @app.callback(
         Output("fetch-progress-bar", "value"),
@@ -384,9 +454,12 @@ def register_data_center_callbacks(app):
         Input("auto-load-resume-btn", "n_clicks"),
         Input("auto-load-pause-btn", "n_clicks"),
         Input("auto-load-reload-confirm", "n_clicks"),
+        Input("auto-load-retry-failed-btn", "n_clicks"),
+        State("auto-load-force-full-check", "value"),
         prevent_initial_call=True,
     )
-    def handle_auto_load_action(start_clicks, resume_clicks, pause_clicks, reload_confirm_clicks):
+    def handle_auto_load_action(start_clicks, resume_clicks, pause_clicks,
+                                reload_confirm_clicks, retry_failed_clicks, force_full):
         if not ctx.triggered:
             return no_update
         tid = ctx.triggered[0]["prop_id"].split(".")[0]
@@ -402,8 +475,12 @@ def register_data_center_callbacks(app):
                 svc.pause()
                 return "自动加载已暂停，可稍后「继续」"
             if tid == "auto-load-reload-confirm":
-                svc.reload()
-                return "已重新规划加载（历史数据保留），请查看进度..."
+                svc.reload(force_full=bool(force_full))
+                return ("已触发彻底重下（全量重新下载），请查看进度..."
+                        if force_full else "已重新规划加载（历史数据保留），请查看进度...")
+            if tid == "auto-load-retry-failed-btn":
+                svc.retry_failed()
+                return "正在重试失败项..."
         except Exception as e:
             logger.error("auto-load action failed: %s", e)
             return f"操作失败: {e}"

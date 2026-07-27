@@ -95,6 +95,10 @@ class AutoLoadService:
         self._stop_event = threading.Event()    # 停止信号：替代旧 _running 布尔
         self._thread: Optional[threading.Thread] = None
         self._session_id: str = ""
+        self._session_start_ts: float = 0.0
+        # P1 失败重试（FR-4.2）：次数与退避可注入（测试用 monkeypatch）
+        self._retry_max_attempts = int(AUTO_LOAD_CFG.get("retry_max_attempts", 4))
+        self._retry_backoff = list(AUTO_LOAD_CFG.get("retry_backoff", [5, 15, 60]))
         self._ensure_status_table()
         # R-01：清理旧版基于位置索引的游标 key（current/skipped/total），由账本 ticker 取代
         try:
@@ -188,6 +192,11 @@ class AutoLoadService:
                 self._set_kv("message", "无法获取成分股列表")
                 return {"phase": PHASE_ERROR, "message": "无法获取成分股列表"}
             plans = self.build_plan(universe, force_full=force_full)
+            n_full = sum(1 for p in plans if p.kind == PLAN_FULL)
+            n_gap = sum(1 for p in plans if p.kind == PLAN_GAP)
+            n_skip = sum(1 for p in plans if p.kind == PLAN_SKIP)
+            logger.info("load_plan_generated full=%d gap=%d skip=%d force_full=%s",
+                        n_full, n_gap, n_skip, force_full)
             work = [p for p in plans if p.kind in (PLAN_FULL, PLAN_GAP)]
             session_id = uuid.uuid4().hex
             with self._db.transaction():
@@ -201,6 +210,7 @@ class AutoLoadService:
                         [p.ticker, session_id, p.kind, STATUS_PENDING,
                          p.gap_start.isoformat() if p.gap_start else None])
             self._session_id = session_id
+            self._session_start_ts = time.time()
             self._set_kv("session_id", session_id)
             self._set_kv("force_full", "1" if force_full else "0")
             self._set_kv("phase", PHASE_LOADING)
@@ -208,6 +218,8 @@ class AutoLoadService:
             self._set_kv("done", "0")
             self._set_kv("failed", "0")
             self._start_background()
+            if force_full:
+                logger.info("load_reset_confirmed session_id=%s force_full=true", session_id)
             return {"phase": PHASE_LOADING, "session_id": session_id, "total": len(work)}
 
     def resume_session(self) -> dict:
@@ -220,10 +232,12 @@ class AutoLoadService:
                 "UPDATE symbol_load_state SET status=? WHERE session_id=? AND status=?",
                 [STATUS_PENDING, sid, STATUS_LOADING])
             pending = self._count_status(sid, (STATUS_PENDING, STATUS_FAILED))
+            logger.info("load_resumed session_id=%s pending=%d", sid, pending)
             if pending == 0:
                 self._set_kv("phase", PHASE_DONE)
                 return {"phase": PHASE_DONE, "session_id": sid, "total": 0}
             self._session_id = sid
+            self._session_start_ts = time.time()
             self._set_kv("phase", PHASE_LOADING)
             self._start_background()
             return {"phase": PHASE_LOADING, "session_id": sid, "pending": pending}
@@ -270,22 +284,62 @@ class AutoLoadService:
     def pause(self) -> dict:
         """「暂停」：置位停止信号，待本轮批次结束后退出。"""
         self._stop_event.set()
+        sid = self._get_kv("session_id", "")
         self._set_kv("phase", PHASE_PAUSED)
+        logger.info("load_paused session_id=%s", sid)
         return {"phase": PHASE_PAUSED}
+
+    def retry_failed(self) -> dict:
+        """「重试失败项」（FR-4.3）：把全部 failed 翻回 pending 再开跑（重置 attempts 允许用户再试最终失败项）。"""
+        with self._lock:
+            sid = self._get_kv("session_id", "")
+            if not sid:
+                return self.get_state()
+            self._db.execute(
+                "UPDATE symbol_load_state SET status=?, attempts=0, last_error=NULL "
+                "WHERE session_id=? AND status=?",
+                [STATUS_PENDING, sid, STATUS_FAILED])
+            self._set_kv("failed", "0")
+            self._set_kv("phase", PHASE_LOADING)
+            self._session_start_ts = time.time()
+            self._start_background()
+            logger.info("load_retry_failed session_id=%s", sid)
+            return self.get_state()
 
     def _background_loop(self):
         try:
-            while not self._stop_event.is_set():
-                more = self._run_batch(AUTO_LOAD_CFG["initial_batch_size"])
-                if not more:
-                    break
-                # 本批已无剩余工作则立即退出，避免空等轮询间隔
-                if not self._has_pending():
-                    break
-                time.sleep(AUTO_LOAD_CFG["initial_batch_interval"])
+            self._run_rounds()
         finally:
             self._stop_event.set()
             self._reconcile_phase()
+
+    def _run_rounds(self):
+        """两阶段（FR-4.2）：① 清空 pending（首轮尝试，连续批不等待）；② 失败重试，轮间退避可注入。"""
+        # 阶段1：首轮全量，批次连续无退避
+        while not self._stop_event.is_set():
+            self._run_batch(AUTO_LOAD_CFG["initial_batch_size"])
+            if self._count_status(self._get_kv("session_id", ""), (STATUS_PENDING,)) == 0:
+                break
+        # 阶段2：失败重试，轮间退避（默认 5s/15s/60s，可注入为 [0,0,0] 加速 CI）
+        round_idx = 0
+        while not self._stop_event.is_set():
+            sid = self._get_kv("session_id", "")
+            if self._count_retryable_failed(sid) == 0:
+                break
+            backoff = self._retry_backoff[min(round_idx, len(self._retry_backoff) - 1)]
+            if backoff > 0 and self._stop_event.wait(backoff):
+                break  # 退避期间被暂停/停止
+            self._run_batch(AUTO_LOAD_CFG["initial_batch_size"])
+            round_idx += 1
+
+    def _count_retryable_failed(self, session_id: str) -> int:
+        if not session_id:
+            return 0
+        row = self._db.query_df(
+            "SELECT COUNT(*) AS c FROM symbol_load_state "
+            "WHERE session_id=? AND status=? AND attempts < ?",
+            [session_id, STATUS_FAILED, self._retry_max_attempts])
+        return int(row["c"][0])
 
     def _has_pending(self) -> bool:
         sid = self._get_kv("session_id", "")
@@ -298,12 +352,18 @@ class AutoLoadService:
         if not sid:
             return
         pending = self._count_status(sid, (STATUS_PENDING, STATUS_FAILED))
-        if pending > 0:
-            # 被暂停：保持 paused；被停止信号打断同理
+        failed = self._count_status(sid, (STATUS_FAILED,))
+        if pending > 0 and failed < pending:
+            # 仍含可继续的 pending（被暂停/打断）：保持 paused
             if self._get_kv("phase", "") != PHASE_PAUSED:
                 self._set_kv("phase", PHASE_PAUSED)
         else:
+            # 无 pending 或仅剩最终失败 → 会话结束（可能部分失败，UI 用 failed>0 呈现）
             self._set_kv("phase", PHASE_DONE)
+            elapsed_ms = int((time.time() - self._session_start_ts) * 1000) if self._session_start_ts else 0
+            reused = self._get_kv("force_full", "0") != "1"
+            logger.info("load_session_done elapsed_ms=%d reused=%s failed=%d",
+                        elapsed_ms, reused, failed)
 
     # ------------------------------------------------------------------ #
     # 加载执行器（FR-2.8 / FR-2.9）：按账本遍历 pending/failed + 单标的同事务 + 幂等
@@ -311,8 +371,9 @@ class AutoLoadService:
     def _run_batch(self, batch_size: int) -> bool:
         rows = self._db.query_df(
             "SELECT ticker, plan, gap_start, attempts FROM symbol_load_state "
-            "WHERE status IN (?,?) ORDER BY attempts ASC, ticker ASC LIMIT ?",
-            [STATUS_PENDING, STATUS_FAILED, batch_size])
+            "WHERE status IN (?,?) AND attempts < ? "
+            "ORDER BY attempts ASC, ticker ASC LIMIT ?",
+            [STATUS_PENDING, STATUS_FAILED, self._retry_max_attempts, batch_size])
         work = list(rows.iter_rows(named=True))
         if not work:
             return False
@@ -339,15 +400,21 @@ class AutoLoadService:
                         "UPDATE symbol_load_state SET status=?, last_error=NULL, "
                         "updated_at=CURRENT_TIMESTAMP WHERE ticker=?",
                         [STATUS_DONE, ticker])
-                self._increment_kv("done", 1)
+                pass
             except Exception as e:
                 attempts = (int(row["attempts"] or 0)) + 1
                 self._db.execute(
                     "UPDATE symbol_load_state SET status=?, attempts=?, last_error=?, "
                     "updated_at=CURRENT_TIMESTAMP WHERE ticker=?",
                     [STATUS_FAILED, attempts, str(e)[:500], ticker])
-                self._increment_kv("failed", 1)
+                logger.info("load_symbol_failed ticker=%s reason=%s attempts=%d",
+                            ticker, self._translate_error(str(e)), attempts)
                 logger.warning("Load failed %s (attempt %d): %s", ticker, attempts, e)
+        # 实时同步 done/failed 计数（按账本实际状态，避免重试造成的累计虚高）
+        sid = self._get_kv("session_id", "")
+        if sid:
+            self._set_kv("done", str(self._count_status(sid, (STATUS_DONE,))))
+            self._set_kv("failed", str(self._count_status(sid, (STATUS_FAILED,))))
         return True
 
     def _download(self, ticker: str, market: str, plan: str,
@@ -434,8 +501,46 @@ class AutoLoadService:
         return {"phase": "incremental", "processed": processed}
 
     # ------------------------------------------------------------------ #
-    # 状态查询（UI / 首页）
+    # 状态查询与失败清单（UI / 首页）
     # ------------------------------------------------------------------ #
+    def get_failed(self) -> list[dict]:
+        """失败清单数据接口（FR-4.3）：ticker / 名称 / 原因 / 已重试次数。"""
+        sid = self._get_kv("session_id", "")
+        if not sid:
+            return []
+        rows = self._db.query_df(
+            "SELECT s.ticker, s.attempts, s.last_error, d.name "
+            "FROM symbol_load_state s LEFT JOIN symbol_dict d ON s.ticker = d.ticker "
+            "WHERE s.session_id=? AND s.status=? ORDER BY s.ticker ASC",
+            [sid, STATUS_FAILED])
+        return [
+            {
+                "ticker": r["ticker"],
+                "name": r["name"] if r["name"] is not None else "—",
+                "attempts": int(r["attempts"] or 0),
+                "reason": self._translate_error(r["last_error"]),
+                "raw_error": (r["last_error"] or "")[:200],
+            }
+            for r in rows.iter_rows(named=True)
+        ]
+
+    @staticmethod
+    def _translate_error(raw) -> str:
+        """失败原因用户可读转译（FR-4.3：不暴露堆栈）。"""
+        if not raw:
+            return "未知错误"
+        msg = str(raw)
+        low = msg.lower()
+        if "timeout" in low or "timed out" in low:
+            return "请求超时"
+        if "rate" in low or "限频" in msg or "429" in low:
+            return "接口限频"
+        if "empty" in low or "无数据" in msg or "none" in low:
+            return "接口无数据返回"
+        if "connect" in low or "network" in low:
+            return "网络连接失败"
+        return msg[:60]
+
     def get_state(self) -> dict:
         sid = self._get_kv("session_id", "")
         phase = self._get_kv("phase", PHASE_IDLE)
