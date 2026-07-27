@@ -308,6 +308,67 @@ def _create_cached_tab():
     )
 
 
+def _derive_auto_load_progress(state: dict):
+    """由 get_state() 推导进度面板（状态徽标/进度条/按钮可见性）。
+
+    纯函数，可单测。关键修复：phase==LOADING 时一律显示「加载中」+ 暂停按钮，
+    不再受 total 是否为 0 影响——避免「暂停按钮可见但左侧仍显示未运行」的 UI 不一致
+    （V1.3 已知缺陷：resume_session 复用账本时不重写 total，total 偶为 0 触发旧分支）。
+    """
+    phase = state.get("phase", PHASE_IDLE)
+    total = int(state.get("total", 0))
+    done = int(state.get("done", 0))
+    failed = int(state.get("failed", 0))
+    pending = int(state.get("pending", 0))
+
+    # 防御：未知/遗留阶段值一律安全降级为 idle，保证「开始」按钮始终可见
+    if phase not in (PHASE_IDLE, PHASE_LOADING, PHASE_PAUSED, PHASE_DONE, PHASE_ERROR):
+        phase = PHASE_IDLE
+
+    show_start = {"display": "block" if phase in (PHASE_IDLE, PHASE_DONE, PHASE_ERROR) else "none"}
+    show_resume = {"display": "block" if state.get("can_resume") else "none"}
+    show_pause = {"display": "block" if phase == PHASE_LOADING else "none"}
+    show_reload = {"display": "block" if phase in (PHASE_DONE, PHASE_PAUSED, PHASE_ERROR) else "none"}
+
+    if phase == PHASE_LOADING:
+        pct = int(done * 100 / total) if total > 0 else 0
+        parts = []
+        if done > 0:
+            parts.append(f"已加载 {done}/{total}" if total > 0 else f"已加载 {done}")
+        if failed > 0:
+            parts.append(f"失败 {failed}")
+        if pending > 0:
+            parts.append(f"待处理 {pending}")
+        detail = "，".join(parts) if parts else "正在准备加载任务..."
+        label = f"{done}/{total} ({pct}%)" if total > 0 else f"{pct}%"
+        return (dbc.Badge("加载中", color="info", className="me-2"),
+                pct, label, detail,
+                show_start, show_resume, show_pause, show_reload)
+    if phase == PHASE_DONE and total > 0:
+        if failed > 0:
+            return (dbc.Badge("部分失败", color="danger", className="me-2"),
+                    100, f"{done}/{total}",
+                    f"成功 {done}，失败 {failed} 个（可展开清单重试）",
+                    show_start, show_resume, show_pause, show_reload)
+        return (dbc.Badge("已完成", color="success", className="me-2"),
+                100, f"{total}/{total} (100%)",
+                f"共处理 {total} 个标的（成功 {done}，失败 {failed}），数据就绪",
+                show_start, show_resume, show_pause, show_reload)
+    if phase == PHASE_PAUSED:
+        return (dbc.Badge("已暂停", color="warning", className="me-2"),
+                int(done * 100 / max(total, 1)), f"{done}/{total}",
+                f"已暂停，可「继续」断点续传（待处理 {pending}）",
+                show_start, show_resume, show_pause, show_reload)
+    if phase == PHASE_ERROR:
+        return (dbc.Badge("出错", color="danger", className="me-2"),
+                0, "错误", state.get("message", "加载过程发生错误"),
+                show_start, show_resume, show_pause, show_reload)
+    # idle
+    return (dbc.Badge("空闲", color="secondary", className="me-2"),
+            0, "0%", "自动加载未运行，请点击「开始自动加载」",
+            show_start, show_resume, show_pause, show_reload)
+
+
 def register_data_center_callbacks(app):
     from fisher.dash_app.services import get_auto_load_service
 
@@ -330,58 +391,7 @@ def register_data_center_callbacks(app):
             logger.error("auto-load progress check failed: %s", e)
             hidden = {"display": "none"}
             return "状态检查失败", 0, "0%", "", hidden, hidden, hidden, hidden
-
-        phase = state.get("phase", PHASE_IDLE)
-        total = int(state.get("total", 0))
-        done = int(state.get("done", 0))
-        failed = int(state.get("failed", 0))
-        pending = int(state.get("pending", 0))
-
-        # 防御：未知/遗留阶段值一律安全降级为 idle，保证「开始」按钮始终可见
-        if phase not in (PHASE_IDLE, PHASE_LOADING, PHASE_PAUSED, PHASE_DONE, PHASE_ERROR):
-            phase = PHASE_IDLE
-
-        show_start = {"display": "block" if phase in (PHASE_IDLE, PHASE_DONE, PHASE_ERROR) else "none"}
-        show_resume = {"display": "block" if state.get("can_resume") else "none"}
-        show_pause = {"display": "block" if phase == PHASE_LOADING else "none"}
-        show_reload = {"display": "block" if phase in (PHASE_DONE, PHASE_PAUSED, PHASE_ERROR) else "none"}
-
-        if phase == PHASE_LOADING and total > 0:
-            pct = int(done * 100 / total) if total > 0 else 0
-            parts = []
-            if done > 0:
-                parts.append(f"已加载 {done}/{total}")
-            if failed > 0:
-                parts.append(f"失败 {failed}")
-            if pending > 0:
-                parts.append(f"待处理 {pending}")
-            detail = "，".join(parts) if parts else "等待中..."
-            return (dbc.Badge("加载中", color="info", className="me-2"),
-                    pct, f"{done}/{total} ({pct}%)", detail,
-                    show_start, show_resume, show_pause, show_reload)
-        if phase == PHASE_DONE and total > 0:
-            if failed > 0:
-                return (dbc.Badge("部分失败", color="danger", className="me-2"),
-                        100, f"{done}/{total}",
-                        f"成功 {done}，失败 {failed} 个（可展开清单重试）",
-                        show_start, show_resume, show_pause, show_reload)
-            return (dbc.Badge("已完成", color="success", className="me-2"),
-                    100, f"{total}/{total} (100%)",
-                    f"共处理 {total} 个标的（成功 {done}，失败 {failed}），数据就绪",
-                    show_start, show_resume, show_pause, show_reload)
-        if phase == PHASE_PAUSED:
-            return (dbc.Badge("已暂停", color="warning", className="me-2"),
-                    int(done * 100 / max(total, 1)), f"{done}/{total}",
-                    f"已暂停，可「继续」断点续传（待处理 {pending}）",
-                    show_start, show_resume, show_pause, show_reload)
-        if phase == PHASE_ERROR:
-            return (dbc.Badge("出错", color="danger", className="me-2"),
-                    0, "错误", state.get("message", "加载过程发生错误"),
-                    show_start, show_resume, show_pause, show_reload)
-        # idle
-        return (dbc.Badge("空闲", color="secondary", className="me-2"),
-                0, "0%", "自动加载未运行，请点击「开始自动加载」",
-                show_start, show_resume, show_pause, show_reload)
+        return _derive_auto_load_progress(state)
 
     @app.callback(
         Output("auto-load-failed-collapse", "is_open"),

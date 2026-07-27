@@ -272,9 +272,15 @@ class AutoLoadService:
                 if pending == 0:
                     # 账本已无可继续项：按用户「继续」意图重新规划（等价于「开始」）
                     return self.start_session()
+                # 复用账本时同步刷新 total：resume 不重写 total 会让进度面板在 total==0
+                # 时误判为空闲（显示「未运行」却仍露出暂停按钮）。total = 本会话账本行数。
+                total_rows = int(self._db.query_df(
+                    "SELECT COUNT(*) AS c FROM symbol_load_state WHERE session_id=?",
+                    [sid])["c"][0])
                 self._session_id = sid
                 self._session_start_ts = time.time()
                 self._set_kv("phase", PHASE_LOADING)
+                self._set_kv("total", str(total_rows))
                 self._start_background()
                 return {"phase": PHASE_LOADING, "session_id": sid, "pending": pending}
         except Exception as e:

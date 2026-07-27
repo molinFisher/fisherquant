@@ -85,10 +85,14 @@ def register_home_callbacks(app):
         current = progress.get("current", 0)
         total = progress.get("total", 0)
 
-        if phase in ("loading", "paused") and total > 0:
+        if phase in ("loading", "paused"):
+            if total > 0:
+                msg = f"⏳ 数据加载中，已加载 {current}/{total} 只"
+            else:
+                msg = "⏳ 数据加载中..."
             return html.Div(
                 dbc.Alert(
-                    f"⏳ 数据加载中，已加载 {current}/{total} 只",
+                    msg,
                     color="info", className="py-1 px-3 small mb-0",
                     style={"fontSize": "14px"},
                 )
