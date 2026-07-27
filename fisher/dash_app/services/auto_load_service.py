@@ -251,29 +251,30 @@ class AutoLoadService:
             return {"phase": PHASE_LOADING, "session_id": session_id, "total": len(work)}
 
     def resume_session(self) -> dict:
-        """「继续」：复用账本，将遗留 loading 翻回 pending 后继续（FR-3.7 中断恢复）。"""
+        """「继续」：复用账本，将遗留 loading 翻回 pending，并把失败项重置为可重试后继续。
+
+        关键修复：失败项（failed）一并翻回 pending 且 attempts 归零，使「继续」在
+        「部分失败」(DONE) 状态下也会重新尝试失败标的，从而清掉失败清单。
+        """
         try:
             with self._lock:
                 self._stop_background()  # 与 start_session 对齐：先终止在途循环，避免旧会话污染新账本
                 sid = self._get_kv("session_id", "")
-                logger.info("DIAG resume_session enter sid=%r", sid)
                 if not sid:
-                    logger.info("DIAG resume_session -> start_session (sid empty)")
                     return self.start_session()
+                # loading -> pending（中断恢复）；failed -> pending 且 attempts 归零（重新尝试失败项）
                 self._db.execute(
-                    "UPDATE symbol_load_state SET status=? WHERE session_id=? AND status=?",
-                    [STATUS_PENDING, sid, STATUS_LOADING])
-                pending = self._count_status(sid, (STATUS_PENDING, STATUS_FAILED))
+                    "UPDATE symbol_load_state SET status=?, attempts=0, last_error=NULL "
+                    "WHERE session_id=? AND status IN (?,?)",
+                    [STATUS_PENDING, sid, STATUS_LOADING, STATUS_FAILED])
+                pending = self._count_status(sid, (STATUS_PENDING,))
                 logger.info("load_resumed session_id=%s pending=%d", sid, pending)
-                logger.info("DIAG resume_session sid-branch pending=%d", pending)
                 if pending == 0:
                     # 账本已无可继续项：按用户「继续」意图重新规划（等价于「开始」）
-                    logger.info("DIAG resume_session pending==0 -> start_session (replan)")
                     return self.start_session()
                 self._session_id = sid
                 self._session_start_ts = time.time()
                 self._set_kv("phase", PHASE_LOADING)
-                logger.info("DIAG resume_session set phase=loading, starting background")
                 self._start_background()
                 return {"phase": PHASE_LOADING, "session_id": sid, "pending": pending}
         except Exception as e:
@@ -288,7 +289,6 @@ class AutoLoadService:
         self._ensure_status_table()
         sid = self._get_kv("session_id", "")
         phase = self._get_kv("phase", PHASE_IDLE)
-        logger.info("DIAG recover enter sid=%r phase=%r", sid, phase)
         # 兼容 V1.2 遗留阶段值（如 'initial_load'/'complete'）：视为脏值，重置后重新规划
         if phase not in _VALID_PHASES:
             self._set_kv("phase", PHASE_IDLE)
@@ -298,14 +298,11 @@ class AutoLoadService:
                 "UPDATE symbol_load_state SET status=? WHERE session_id=? AND status=?",
                 [STATUS_PENDING, sid, STATUS_LOADING])
             pending = self._count_status(sid, (STATUS_PENDING, STATUS_FAILED))
-            logger.info("DIAG recover sid-branch pending=%d", pending)
             if pending > 0:
                 self._set_kv("phase", PHASE_PAUSED)   # 等待用户「继续」
             else:
                 self._set_kv("phase", PHASE_DONE)
-            st = self.get_state()
-            logger.info("DIAG recover exit phase=%s", st["phase"])
-            return st
+            return self.get_state()
         # 全新：空库自动开始；有数据则空闲等待用户操作
         try:
             count = int(self._db.query_df("SELECT COUNT(*) AS c FROM bars_daily")["c"][0])
@@ -314,7 +311,6 @@ class AutoLoadService:
         if count == 0:
             return self.start_session(force_full=False)
         self._set_kv("phase", PHASE_IDLE)
-        logger.info("DIAG recover idle-branch (sid empty, bars=%d)", count)
         return self.get_state()
 
     def _count_status(self, session_id: str, statuses) -> int:
@@ -605,7 +601,7 @@ class AutoLoadService:
         if sid:
             pending = self._count_status(sid, (STATUS_PENDING, STATUS_FAILED))
         can_resume = bool(sid) and pending > 0 and phase in (
-            PHASE_PAUSED, PHASE_IDLE, PHASE_ERROR)
+            PHASE_PAUSED, PHASE_IDLE, PHASE_ERROR, PHASE_DONE)
         return {
             "phase": phase, "session_id": sid, "total": total, "done": done,
             "failed": failed, "pending": pending,
