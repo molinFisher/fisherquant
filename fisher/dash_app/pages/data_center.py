@@ -486,9 +486,8 @@ def register_data_center_callbacks(app):
                 svc.retry_failed()
                 return "正在重试失败项..."
         except Exception as e:
-            logger.error("auto-load action failed: %s", e)
+            logger.exception("auto-load action failed")
             return f"操作失败: {e}"
-        return no_update
 
 
 def _create_advanced_tab():
