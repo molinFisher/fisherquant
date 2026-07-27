@@ -473,7 +473,7 @@ def register_data_center_callbacks(app):
                 svc.start()
                 return "自动加载已启动（基于数据库已有历史数据规划），请查看进度..."
             if tid == "auto-load-resume-btn":
-                svc.resume()
+                svc.resume_session()
                 return "已从断点继续加载..."
             if tid == "auto-load-pause-btn":
                 svc.pause()
