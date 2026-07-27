@@ -337,6 +337,10 @@ def register_data_center_callbacks(app):
         failed = int(state.get("failed", 0))
         pending = int(state.get("pending", 0))
 
+        # 防御：未知/遗留阶段值一律安全降级为 idle，保证「开始」按钮始终可见
+        if phase not in (PHASE_IDLE, PHASE_LOADING, PHASE_PAUSED, PHASE_DONE, PHASE_ERROR):
+            phase = PHASE_IDLE
+
         show_start = {"display": "block" if phase in (PHASE_IDLE, PHASE_DONE, PHASE_ERROR) else "none"}
         show_resume = {"display": "block" if state.get("can_resume") else "none"}
         show_pause = {"display": "block" if phase == PHASE_LOADING else "none"}

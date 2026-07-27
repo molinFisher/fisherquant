@@ -32,6 +32,9 @@ PHASE_PAUSED = "paused"    # 已暂停/可继续（含跨重启识别到的中�
 PHASE_DONE = "done"        # 本会话全部完成
 PHASE_ERROR = "error"      # 致命错误（如无法获取成分股）
 
+# 合法阶段集合（用于识别 V1.2 遗留脏值，如 'initial_load'/'complete'）
+_VALID_PHASES = {PHASE_IDLE, PHASE_LOADING, PHASE_PAUSED, PHASE_DONE, PHASE_ERROR}
+
 MARKET_A = "a_share"
 MARKET_HK = "hk_connect"
 
@@ -246,6 +249,11 @@ class AutoLoadService:
         """冷启动中断恢复：不自动开跑，仅把遗留 loading 翻回 pending 以便「继续」（FR-3.7）。"""
         self._ensure_status_table()
         sid = self._get_kv("session_id", "")
+        phase = self._get_kv("phase", PHASE_IDLE)
+        # 兼容 V1.2 遗留阶段值（如 'initial_load'/'complete'）：视为脏值，重置后重新规划
+        if phase not in _VALID_PHASES:
+            self._set_kv("phase", PHASE_IDLE)
+            sid = ""
         if sid:
             self._db.execute(
                 "UPDATE symbol_load_state SET status=? WHERE session_id=? AND status=?",
@@ -257,7 +265,10 @@ class AutoLoadService:
                 self._set_kv("phase", PHASE_DONE)
             return self.get_state()
         # 全新：空库自动开始；有数据则空闲等待用户操作
-        count = int(self._db.query_df("SELECT COUNT(*) AS c FROM bars_daily")["c"][0])
+        try:
+            count = int(self._db.query_df("SELECT COUNT(*) AS c FROM bars_daily")["c"][0])
+        except Exception:
+            count = 0
         if count == 0:
             return self.start_session(force_full=False)
         self._set_kv("phase", PHASE_IDLE)
