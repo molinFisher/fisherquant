@@ -352,7 +352,7 @@ class TestDataCacheCallbacks:
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 1)
-        assert cb("tab-live", "all", "", 0, 0, 0) is no_update
+        assert cb("tab-live", "all", "", 0, 0, 0, None) is no_update
 
     def test_render_cached_table_with_rows(self, monkeypatch):
         rows = [{"ticker": "600519", "market": "a_share", "records": 10,
@@ -362,7 +362,7 @@ class TestDataCacheCallbacks:
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 1)
-        res = cb("tab-cached", "all", "", 1, 1, 0)
+        res = cb("tab-cached", "all", "", 1, 1, 0, None)
         assert isinstance(res, dash_table.DataTable)
         assert res.id == "cached-data-table"
         assert res.data == rows
@@ -373,9 +373,47 @@ class TestDataCacheCallbacks:
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 1)
-        res = cb("tab-cached", "all", "", 1, 1, 0)
+        res = cb("tab-cached", "all", "", 1, 1, 0, None)
         assert isinstance(res, html.Div)
         assert "暂无缓存数据" in "".join(_text(res))
+
+    def test_render_cached_table_poll_preserves_pagination(self, monkeypatch):
+        """回归测试：auto-load 轮询(3s)触发回调时，若缓存数据未变化必须 no_update，
+        否则 DataTable 的 page_current 会被重置回第 1 页（用户翻页后自动跳回的 bug）。"""
+        rows = [
+            {"ticker": "600519", "market": "a_share", "records": 10,
+             "start_date": "2024-01-01", "end_date": "2024-02-01"},
+            {"ticker": "000001", "market": "a_share", "records": 8,
+             "start_date": "2024-01-01", "end_date": "2024-02-01"},
+        ]
+        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
+                            lambda: FakeService(cached_table=rows))
+        with capture_dash_callbacks() as app:
+            data_cache_callbacks.register_data_cache_callbacks(app)
+            cb = _nth(app, 1)
+        # 首次渲染（current_data=None）必须构建表格
+        first = cb("tab-cached", "all", "", 1, 1, 0, None)
+        assert isinstance(first, dash_table.DataTable)
+        # 模拟一次轮询 tick：数据相同（current_data 即上一次返回的 data）
+        # —— 关键断言：必须 no_update，否则翻页状态被重置
+        again = cb("tab-cached", "all", "", 1, 1, 1, first.data)
+        assert again is no_update
+        # 数据真正变化时必须重建（保证自动加载新增标的仍会刷新）
+        changed = [dict(rows[0]), {"ticker": "300750", "market": "a_share",
+                                   "records": 3, "start_date": "2024-03-01",
+                                   "end_date": "2024-04-01"}]
+        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
+                            lambda: FakeService(cached_table=changed))
+        rebuilt = cb("tab-cached", "all", "", 1, 1, 2, rows)  # current_data=旧 2 行
+        assert isinstance(rebuilt, dash_table.DataTable)
+        assert any(r["ticker"] == "300750" for r in rebuilt.data)
+        # 日期类型差异不应误判为变化（DB 返回 date / DataTable 回传 str）
+        date_obj_rows = [dict(r, start_date=_dtmod.date(2024, 1, 1),
+                              end_date=_dtmod.date(2024, 2, 1)) for r in rows]
+        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
+                            lambda: FakeService(cached_table=date_obj_rows))
+        with_dates = cb("tab-cached", "all", "", 1, 1, 3, first.data)
+        assert with_dates is no_update
 
     def test_delete_selected_rows(self, monkeypatch):
         rows = [{"ticker": "600519", "market": "a_share", "records": 1,

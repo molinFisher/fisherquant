@@ -24,8 +24,11 @@ def register_data_cache_callbacks(app):
         Input("cache-refresh-btn", "n_clicks"),
         Input("cache-delete-btn", "n_clicks"),
         Input("auto-load-progress-poll", "n_intervals"),
+        State("cached-data-table", "data"),
     )
-    def render_cached_table(active_tab, market_filter, filter_text, refresh_clicks, delete_clicks, load_poll):
+    def render_cached_table(
+        active_tab, market_filter, filter_text, refresh_clicks, delete_clicks, load_poll, current_data
+    ):
         if active_tab != "tab-cached":
             return no_update
 
@@ -34,6 +37,10 @@ def register_data_cache_callbacks(app):
             market_filter=market_filter or "all",
             text_filter=filter_text or "",
         )
+        # 关键修复：auto-load-progress-poll 每 3 秒触发本回调。若缓存数据未变化，
+        # 不再重建表格，避免 DataTable 的 page_current 被重置回第 1 页（用户翻页后自动跳回）。
+        if _same_cached_rows(rows, current_data):
+            return no_update
         if not rows:
             return _empty_cached_table()
 
@@ -103,6 +110,30 @@ def _build_cached_table():
             {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
         ],
     )
+
+
+def _same_cached_rows(rows, current_data):
+    """比较缓存表格数据是否发生变化（忽略 dict 顺序与日期类型差异）。
+
+    仅在数据真正变化时才重建 DataTable，避免每 3 秒的自动加载轮询把翻页状态重置回第 1 页。
+    current_data 为 None 表示表格尚未构建（首次渲染），必须返回 False 以触发渲染。
+    """
+    if current_data is None:
+        return False
+    if not rows and not current_data:
+        return True
+    if not rows or not current_data:
+        return False
+
+    def _sig(r):
+        return (
+            str(r.get("ticker")),
+            str(r.get("records")),
+            str(r.get("start_date")),
+            str(r.get("end_date")),
+        )
+
+    return [_sig(r) for r in rows] == [_sig(r) for r in current_data]
 
 
 def _empty_cached_table():
