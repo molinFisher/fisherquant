@@ -182,12 +182,36 @@ class AutoLoadService:
     # 会话管理（FR-2.x）：session_id + 清单快照 + 幽灵行清理
     # ------------------------------------------------------------------ #
     def _snapshot_universe(self) -> list[str]:
-        """当前加载宇宙：沪深300成分 + 港股通主要标的（与旧 _load_index_codes 口径一致）。"""
-        return self._load_index_codes()
+        """当前加载宇宙：沪深300成分 + 港股通主要标的（与旧 _load_index_codes 口径一致）。
+
+        去重：成分股清单偶发含重复 ticker（akshare 接口脏数据，如 600482.SH 出现两次），
+        重复会导致账本 INSERT 主键冲突并让整个「开始」操作失败（见 issue 重复键）。
+        """
+        codes = self._load_index_codes()
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for c in codes:
+            if c not in seen:
+                seen.add(c)
+                deduped.append(c)
+        return deduped
+
+    def _stop_background(self, timeout: float = 5.0):
+        """停止在途后台循环（如用户重新「开始」），避免旧会话线程污染新账本（会话隔离）。
+
+        后台循环不持有 self._lock，故在 start_session 持锁时 join 不会死锁。
+        """
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            self._stop_event.set()
+            thread.join(timeout=timeout)
+        self._stop_event.clear()
+        self._thread = None
 
     def start_session(self, force_full: bool = False) -> dict:
-        """「开始」/「重新加载」：全新会话，重建账本（幽灵行清理）。"""
+        """「开始」/「重新加载」：全新会话，重建账本（幽灵行清理 + 在途循环终止）。"""
         with self._lock:
+            self._stop_background()  # 先终止旧会话后台循环，避免其 UPDATE 误改新账本
             self._ensure_status_table()
             universe = self._snapshot_universe()
             if not universe:
@@ -206,8 +230,9 @@ class AutoLoadService:
                 # 幽灵行清理：清空旧会话账本（含崩溃遗留的 loading 行）
                 self._db.execute("DELETE FROM symbol_load_state")
                 for p in work:
+                    # INSERT OR REPLACE：即使宇宙仍含重复 ticker 也幂等，绝不抛主键冲突
                     self._db.execute(
-                        "INSERT INTO symbol_load_state "
+                        "INSERT OR REPLACE INTO symbol_load_state "
                         "(ticker, session_id, plan, status, gap_start, attempts) "
                         "VALUES (?,?,?,?,?,0)",
                         [p.ticker, session_id, p.kind, STATUS_PENDING,

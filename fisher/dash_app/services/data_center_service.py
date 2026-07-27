@@ -88,6 +88,17 @@ class DataCenterService:
             return {"a_share": 0, "hk_connect": 0, "total": 0,
                     "elapsed_ms": int((time.time() - t0) * 1000), "replaced": False}
 
+        # 去重：A股/港股清单偶发含重复代码（akshare 接口脏数据），
+        # 重复 ticker 会导致 INSERT 主键冲突并让原子替换整体回滚（旧字典被保留），
+        # 与自动加载账本重复键同源。按 ticker 去重，保留首次出现。
+        _seen: set[str] = set()
+        _deduped: list[list] = []
+        for _r in rows:
+            if _r[0] not in _seen:
+                _seen.add(_r[0])
+                _deduped.append(_r)
+        rows = _deduped
+
         # R-12 原子替换：单事务 DELETE + executemany INSERT，异常回滚保留旧数据
         try:
             with self._db.transaction() as conn:
