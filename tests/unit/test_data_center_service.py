@@ -157,6 +157,53 @@ class TestFetchBars:
         df = data_service._db.query_df("SELECT COUNT(*) as c FROM bars_daily")
         assert df["c"][0] > 0
 
+    def test_fetch_daily_converts_date_to_compact(self, data_service, monkeypatch):
+        """回归（2026-07-28）：stock_zh_a_hist 只接受 YYYYMMDD，
+        传 ISO 带横线日期会被东财断连 → 空结果 →「无数据」。"""
+        import akshare as ak
+        captured = {}
+
+        def fake_hist(symbol=None, period="daily", start_date="", end_date="", adjust=""):
+            captured["start"] = start_date
+            captured["end"] = end_date
+            return None
+
+        monkeypatch.setattr(ak, "stock_zh_a_hist", fake_hist)
+        data_service.fetch_bars(["600519.SH"], "2026-07-01", "2026-07-25")
+        assert captured["start"] == "20260701"
+        assert captured["end"] == "20260725"
+
+    def test_fetch_daily_hk_routes_to_hk_daily(self, data_service, monkeypatch):
+        """回归（2026-07-28）：港股日线走 stock_hk_daily 并按区间过滤，
+        原实现对 .HK 也调 A 股接口必失败。"""
+        import akshare as ak
+        rows = [
+            {"date": "2023-12-29", "open": 1.0, "high": 1.0, "low": 1.0,
+             "close": 1.0, "volume": 10},   # 区间外，应被过滤
+            {"date": "2024-01-02", "open": 2.0, "high": 2.0, "low": 2.0,
+             "close": 2.0, "volume": 20},
+        ]
+
+        def fake_hk_daily(symbol=None, **kwargs):
+            assert symbol == "00700"
+            return pd.DataFrame(rows)
+
+        monkeypatch.setattr(ak, "stock_hk_daily", fake_hk_daily, raising=False)
+        results = data_service.fetch_bars(["00700.HK"], "2024-01-01", "2024-01-31")
+        assert results["00700.HK"]["status"] == "ok"
+        assert results["00700.HK"]["count"] == 1
+        df = data_service._db.query_df(
+            "SELECT market FROM bars_daily WHERE ticker='00700.HK'")
+        assert df["market"][0] == "hk_connect"
+
+    def test_fetch_daily_empty_reports_reason(self, data_service, monkeypatch):
+        """回归（2026-07-28）：空结果需明确写入失败原因，不再静默丢失。"""
+        import akshare as ak
+        monkeypatch.setattr(ak, "stock_zh_a_hist", lambda *a, **k: None)
+        results = data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
+        assert results["600519.SH"]["status"] == "failed"
+        assert "无数据" in results["600519.SH"]["error"]
+
 
 class TestCacheStats:
     def test_empty_db_returns_zeros(self, data_service):

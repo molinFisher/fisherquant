@@ -260,13 +260,20 @@ def register_data_callbacks(app):
         State("data-type-radio", "value"),
         State("minute-period-selector", "value"),
         prevent_initial_call=True,
-        background=True,
         running=[
             (Output("fetch-data-button", "disabled"), True, False),
             (Output("fetch-data-button", "children"), "获取中...", "开始获取数据"),
         ],
     )
     def fetch_data(n_clicks, pool, start_date, end_date, data_type, minute_period):
+        """同步取数回调。
+
+        注意：不可用 background=True + yield 生成器——Dash 后台回调不支持
+        生成器（diskcache pickle 失败：cannot pickle 'generator' object），
+        且后台回调在独立进程运行会与主进程的 DuckDB 独占锁冲突。
+        单次上限 MAX_FETCH_SYMBOLS(20) 个标的，同步执行可接受；
+        进度在完成时一次性写入 fetch-progress-status。
+        """
         pool = pool or []
         items = _dedupe_by_value([p for p in pool if p.get("value")])[:MAX_FETCH_SYMBOLS]
 
@@ -277,14 +284,11 @@ def register_data_callbacks(app):
         total = len(items)
         results, errors, skipped = [], [], []
 
-        for i, item in enumerate(items):
+        for item in items:
             symbol = item["value"]
             # 产品决策（2026-07-28）：财务数据仅支持 A 股，港股跳过并明示
             if data_type == "financials" and _is_hk(item):
                 skipped.append(f"⊘ {symbol}: 财务数据仅支持 A 股，已跳过")
-                yield dash.no_update, dash.no_update, {
-                    "current": i + 1, "total": total, "symbol": symbol,
-                }
                 continue
             period = minute_period.replace("min", "") if minute_period else ""
             try:
@@ -300,10 +304,6 @@ def register_data_callbacks(app):
                     errors.append(f"✗ {symbol}: {sym_result.get('error', '无数据')}")
             except Exception as e:
                 errors.append(f"✗ {symbol}: {str(e)[:80]}")
-
-            yield dash.no_update, dash.no_update, {
-                "current": i + 1, "total": total, "symbol": symbol,
-            }
 
         summary = f"完成：成功 {len(results)}，失败 {len(errors)}"
         if skipped:

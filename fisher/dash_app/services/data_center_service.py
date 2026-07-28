@@ -16,6 +16,19 @@ from .symbol_search import (
 logger = logging.getLogger(__name__)
 
 
+def _retry_fetch(fn, attempts: int = 3, delay: float = 1.5):
+    """akshare 东财系接口偶发 RemoteDisconnected 瞬时断连，轻量重试。"""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if i < attempts - 1:
+                time.sleep(delay)
+    raise last_exc
+
+
 class DataCenterService:
     def __init__(self, db: DuckDBManager, limiter: RateLimiter):
         self._db = db
@@ -319,12 +332,42 @@ class DataCenterService:
                    data_type: str = "daily", period: str = "") -> dict:
         import json
         results = {}
+        # akshare 东财系接口只接受 YYYYMMDD；日期选择器给出 ISO（带横线），统一转换
+        start_compact = (start or "").replace("-", "")
+        end_compact = (end or "").replace("-", "")
         for sym in symbols:
             try:
+                is_hk = sym.upper().endswith(".HK")
                 code = sym.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
                 if data_type == "daily":
-                    df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                                            start_date=start, end_date=end, adjust="")
+                    if is_hk:
+                        # 港股：stock_hk_daily 返回全量历史，按区间过滤
+                        df = _retry_fetch(lambda: ak.stock_hk_daily(symbol=code))
+                        if df is None or df.empty:
+                            results[sym] = {"status": "failed", "error": "该区间无数据"}
+                            continue
+                        rows = []
+                        for _, r in df.iterrows():
+                            d = r["date"]
+                            ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
+                                  else str(d)[:10])
+                            if (start and ds < start) or (end and ds > end):
+                                continue
+                            rows.append([sym, ds, float(r["open"]), float(r["high"]),
+                                         float(r["low"]), float(r["close"]),
+                                         int(r.get("volume", 0) or 0), 0.0,
+                                         "hk_connect", 1.0])
+                        if not rows:
+                            results[sym] = {"status": "failed", "error": "该区间无数据"}
+                            continue
+                        self._db.execute("DELETE FROM bars_daily WHERE ticker=?", [sym])
+                        self._db.execute_many(
+                            "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                        results[sym] = {"status": "ok", "count": len(rows)}
+                        continue
+                    df = _retry_fetch(lambda: ak.stock_zh_a_hist(
+                        symbol=code, period="daily",
+                        start_date=start_compact, end_date=end_compact, adjust=""))
                     if df is not None and not df.empty:
                         ticker = resolve_ticker(code, "a_share")
                         rows = []
@@ -336,10 +379,16 @@ class DataCenterService:
                         self._db.execute_many(
                             "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
                         results[sym] = {"status": "ok", "count": len(rows)}
+                    else:
+                        results[sym] = {"status": "failed", "error": "该区间无数据"}
                 elif data_type == "minute":
-                    df = ak.stock_zh_a_hist_min_em(symbol=code, period=period or "1",
-                                                   start_date=start.replace("-", ""),
-                                                   end_date=end.replace("-", ""))
+                    if is_hk:
+                        results[sym] = {"status": "failed",
+                                        "error": "分钟线暂仅支持 A 股"}
+                        continue
+                    df = _retry_fetch(lambda: ak.stock_zh_a_hist_min_em(
+                        symbol=code, period=period or "1",
+                        start_date=start_compact, end_date=end_compact))
                     if df is not None and not df.empty:
                         ticker = resolve_ticker(code, "a_share")
                         rows = []
@@ -351,8 +400,10 @@ class DataCenterService:
                         self._db.execute_many(
                             "INSERT INTO bars_minute VALUES (?,?,?,?,?,?,?,?)", rows)
                         results[sym] = {"status": "ok", "count": len(rows)}
+                    else:
+                        results[sym] = {"status": "failed", "error": "该区间无数据"}
                 elif data_type == "financials":
-                    df = ak.stock_financial_abstract(symbol=code)
+                    df = _retry_fetch(lambda: ak.stock_financial_abstract(symbol=code))
                     if df is not None and not df.empty:
                         self._db.execute("CREATE TABLE IF NOT EXISTS financials "
                                          "(ticker VARCHAR, report_date VARCHAR, data JSON)")
@@ -362,6 +413,8 @@ class DataCenterService:
                                              [code, str(r.iloc[0])[:10],
                                               json.dumps(r.to_dict(), ensure_ascii=False)])
                         results[sym] = {"status": "ok", "financials": True}
+                    else:
+                        results[sym] = {"status": "failed", "error": "无财务数据"}
             except Exception as e:
                 results[sym] = {"status": "failed", "error": str(e)[:80]}
         return results

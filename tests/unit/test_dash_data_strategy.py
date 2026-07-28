@@ -124,17 +124,6 @@ def _nth(app, n):
     return app.all_callbacks()[n]
 
 
-def _run_generator(gen):
-    """消费 background 回调生成器，返回其最终的 return 值（StopIteration.value）。"""
-    final = None
-    try:
-        while True:
-            next(gen)
-    except StopIteration as e:
-        final = e.value
-    return final
-
-
 def _text(node, out=None):
     """递归抽取 dash 组件树中的文本，用于断言关键文案。"""
     if out is None:
@@ -263,13 +252,27 @@ class TestDataCallbacks:
         assert len(miss) == 1 and "999999" in miss[0]["label"] and "未收录" in miss[0]["label"]
         assert "未收录 1 个" in "".join(_text(status))
 
+    def test_fetch_data_is_not_generator(self, monkeypatch):
+        """回归：fetch_data 不得是生成器函数。
+
+        Dash background 回调不支持生成器（diskcache pickle 失败导致
+        取数结果永远不返回，2026-07-28 线上 bug）。
+        """
+        import inspect
+        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
+                            lambda: FakeService())
+        with capture_dash_callbacks() as app:
+            data_callbacks.register_data_callbacks(app)
+            cb = app.by_output("fetch-results")
+        assert not inspect.isgeneratorfunction(cb)
+
     def test_fetch_data_no_symbols(self, monkeypatch):
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: FakeService())
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
             cb = app.by_output("fetch-results")
-        final = _run_generator(cb(1, [], "2024-01-01", "2024-02-01", "daily", ""))
+        final = cb(1, [], "2024-01-01", "2024-02-01", "daily", "")
         assert "勾选标的" in final[0]
 
     def test_fetch_data_success(self, monkeypatch):
@@ -281,8 +284,7 @@ class TestDataCallbacks:
             cb = app.by_output("fetch-results")
         pool = [{"value": "600519.SH", "code": "600519",
                  "name": "贵州茅台", "market": "a_share"}]
-        final = _run_generator(
-            cb(1, pool, "2024-01-01", "2024-02-01", "daily", ""))
+        final = cb(1, pool, "2024-01-01", "2024-02-01", "daily", "")
         assert "成功 1" in final[0]
         assert "✓ 600519.SH: 5条记录" in "".join(_text(final[1]))
         assert final[2]["current"] == final[2]["total"] == 1
@@ -302,8 +304,7 @@ class TestDataCallbacks:
             {"value": "00700.HK", "code": "00700", "name": "腾讯控股",
              "market": "hk_connect"},
         ]
-        final = _run_generator(
-            cb(1, pool, "2024-01-01", "2024-02-01", "financials", ""))
+        final = cb(1, pool, "2024-01-01", "2024-02-01", "financials", "")
         txt = "".join(_text(final[1]))
         assert "⊘ 00700.HK" in txt and "仅支持 A 股" in txt
         assert ("fetch_bars", ["600519.SH"]) in fake.calls
