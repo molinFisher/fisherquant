@@ -117,7 +117,28 @@ class DuckDBManager:
                 pass
 
     def _rebuild_and_reconnect_locked(self, path: str):
-        """在持锁状态下备份损坏文件并重建空库（调用方需持有 _connect_lock）。"""
+        """在持锁状态下从 WAL 损坏中恢复，尽量保留已提交数据（PRD §16.13 损坏自恢复）。
+
+        绝大多数 WAL 损坏发生在未提交 / checkpoint 边缘，主库文件本身一致。
+        因此优先「仅丢弃损坏的 WAL、保留主库文件」重新打开；仅当主库文件
+        本身也打不开时才回退到旧的「备份主库并建空库」行为。这样可避免每次
+        重启因残留损坏 WAL 而清空全部缓存与标的字典（曾导致搜索无结果）。
+        """
+        wal_path = f"{path}.wal"
+        # 策略 1：丢弃损坏 WAL，保留主库已提交数据
+        if os.path.exists(wal_path):
+            try:
+                os.remove(wal_path)
+            except OSError:
+                pass
+            try:
+                self._write_conn = duckdb.connect(path)
+                self._write_conn.execute("SELECT 1")  # 探针
+                logger.info("已丢弃损坏 WAL 并以主库文件恢复连接（保留已提交数据）")
+                return
+            except Exception as e:
+                logger.warning("丢弃 WAL 后仍无法打开主库，回退备份重建: %s", e)
+        # 策略 2（兜底）：主库也损坏 → 备份并建空库（原行为）
         corrupt_backup = f"{path}.corrupt.{int(time.time() * 1000)}"
         try:
             if os.path.exists(path):
