@@ -108,7 +108,7 @@ class TestFetchGuard:
 
     def test_nonempty_pool_enabled(self, cbs):
         disabled, hint = cbs.by_output("fetch-guard-hint")([A1], "daily")
-        assert disabled is False and hint == ""
+        assert disabled is False and "最多同时获取" in hint
 
     def test_financials_all_hk_disabled(self, cbs):
         disabled, hint = cbs.by_output("fetch-guard-hint")([HK], "financials")
@@ -120,7 +120,7 @@ class TestFetchGuard:
 
     def test_financials_all_a_share_enabled(self, cbs):
         disabled, hint = cbs.by_output("fetch-guard-hint")([A1, A2], "financials")
-        assert disabled is False and hint == ""
+        assert disabled is False and "最多同时获取" in hint
 
 
 # --------------------------------------------------------------------------- #

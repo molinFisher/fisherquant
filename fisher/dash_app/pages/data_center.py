@@ -110,7 +110,7 @@ def _create_query_tab():
                                                     {"label": "30分钟", "value": "30min"},
                                                     {"label": "60分钟", "value": "60min"},
                                                 ],
-                                                value="5min",
+                                                value="1min",
                                             ),
                                         ],
                                         style={"display": "none"},

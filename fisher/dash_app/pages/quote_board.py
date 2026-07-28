@@ -15,7 +15,8 @@ def create_quote_board_layout():
                                     dcc.Dropdown(
                                         id="qb-add-symbol-dropdown",
                                         options=[],
-                                        placeholder="搜索并添加标的...",
+                                        placeholder="搜索标的（支持代码/名称/拼音）...",
+                                        multi=True,
                                         style={"flex": "1"},
                                     ),
                                     dbc.Button("添加", id="qb-add-btn", color="primary"),
@@ -80,6 +81,7 @@ def create_quote_board_layout():
             ),
     html.Div(id="qb-health-div", className="mb-2"),
     html.Div(id="qb-delete-bar", className="mb-2"),  # FR-1.2：批量删除按钮容器
+    dbc.Input(id="qb-table-filter", placeholder="筛选代码/名称...", className="mb-2"),  # W1
     html.Div(id="qb-table-container"),
     # FR-2.1：K 线 Tabs（分钟线 + 日线）
     dbc.Tabs(

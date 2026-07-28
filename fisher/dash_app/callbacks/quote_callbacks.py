@@ -33,10 +33,13 @@ _BADGE_NAMES = {
 # DB / 目录辅助
 # --------------------------------------------------------------------------- #
 def _get_db():
+    """获取数据库连接，自动初始化 schema（防止空库无表导致的查询失败）。"""
     db = DuckDBManager()
     if not db._initialized:
         try:
             db.connect("./data/fisherquant.db", read_pool_size=4)
+            from ..store.schema import init_schema
+            init_schema(db)
         except Exception:
             pass
     return db
@@ -334,6 +337,8 @@ def _build_quote_table(data, highlight=None):
         row_selectable="multi",
         page_size=15,
         markdown_options={"html": True},
+        filter_action="custom",
+        filter_query="",
         tooltip_data=[
             {"volume": {"value": f"原始值：{r.get('volume_raw', '-')}", "type": "markdown"},
              "remove": {"value": "移除此标的", "type": "markdown"}}
@@ -356,8 +361,30 @@ def register_quote_callbacks(app):
         Input("url", "pathname"),
     )
     def load_qb_symbols(pathname):
-        # IC-3：仅已缓存标的可加（防死标）
+        # D4：初始加载已缓存标的
         return _get_cached_symbols()
+
+    # W2：用户输入时动态全量搜索
+    @app.callback(
+        Output("qb-add-symbol-dropdown", "options", allow_duplicate=True),
+        Input("qb-add-symbol-dropdown", "search_value"),
+        prevent_initial_call=True,
+    )
+    def search_full_market(search_value):
+        if not search_value or len(search_value.strip()) < 1:
+            return no_update
+        try:
+            svc = get_data_service()
+            matches = svc.search_symbols(search_value.strip())
+            if not matches:
+                return [{"label": "未找到匹配标的（试试代码、名称或拼音）", "value": "", "disabled": True}]
+            # 前 20 个匹配项
+            return [
+                {"label": f"{m.get('name','')} {m.get('code','')}".strip(), "value": m["value"]}
+                for m in matches[:20]
+            ]
+        except Exception:
+            return [{"label": "搜索服务暂时不可用", "value": "", "disabled": True}]
 
     @app.callback(
         Output("qb-watchlist-store", "data", allow_duplicate=True),
@@ -384,10 +411,19 @@ def register_quote_callbacks(app):
         watchlist = wl
 
         if triggered_id == "qb-add-btn" and new_symbol:
-            # FR-5.2：仅允许已缓存标的入自选（死标不入）
-            if not _is_dead_symbol(new_symbol) and new_symbol not in watchlist:
-                watchlist.append(new_symbol)
-                _save_watchlist(watchlist)
+            # W2：支持 multi=True（list）和旧版单值兼容
+            symbols_to_add = new_symbol if isinstance(new_symbol, list) else [new_symbol]
+            for sym in symbols_to_add:
+                if not sym or sym in watchlist:
+                    continue
+                watchlist.append(sym)
+                # W2：自动触发一次日线获取（非缓存标的填入数据）
+                try:
+                    svc = get_data_service()
+                    svc.fetch_bars([sym], "", "", "daily")
+                except Exception:
+                    logger.debug("auto_fetch_bars for %s failed (will fill on next refresh)", sym)
+            _save_watchlist(watchlist)
 
         if not watchlist:
             return watchlist, html.Div("自选列表为空，请添加标的", className="text-muted text-center mt-4")
@@ -539,6 +575,25 @@ def register_quote_callbacks(app):
         if not wl:
             return html.Div("自选列表为空，请添加标的", className="text-muted text-center mt-4")
         return _build_quote_table(_fetch_quote_data(wl, adj_mode))
+
+    # ------------------------------------------------------------------ #
+    # W1：看板内筛选——输入即过滤（客户端，零网络开销）
+    # ------------------------------------------------------------------ #
+    @app.callback(
+        Output("qb-data-table", "filter_query", allow_duplicate=True),
+        Input("qb-table-filter", "value"),
+        prevent_initial_call=True,
+    )
+    def table_filter(filter_value):
+        """W1：实时筛选表格行（代码/名称匹配，不区分大小写）。
+
+        使用 Dash DataTable 的 filter_query 语法（客户端过滤）。
+        """
+        if not filter_value or not filter_value.strip():
+            return ""
+        q = filter_value.strip()
+        # 同时匹配 code 和 name 列
+        return f"{{code}} contains '{q}' || {{name}} contains '{q}'"
 
     # ------------------------------------------------------------------ #
     # FR-1.1：单行 × 删除 + FR-2.3：点击切换 K 线标的
@@ -763,8 +818,8 @@ def _build_daily_chart(symbol, bars, adj_mode="none"):
     fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=2)
     fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0", row=1, title_text="价格")
     fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0", row=2, title_text="成交量")
-    # rangeslider 在 row 1（subplot 模式下须指定 row）
-    fig.update_xaxes(rangeslider_visible=True, row=1)
+    # W3：跳过周末（subplot 模式须指定 row=1）
+    fig.update_xaxes(rangeslider_visible=True, rangebreaks=[dict(bounds=["sat", "mon"])], row=1)
     return fig
 
 

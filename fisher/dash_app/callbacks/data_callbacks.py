@@ -237,18 +237,24 @@ def register_data_callbacks(app):
         prevent_initial_call="initial_duplicate",
     )
     def guard_fetch_button(pool, data_type):
-        """FR-5 取数按钮守卫：空池禁用；财务模式全港股禁用、混合提示跳过。"""
+        """FR-5 取数按钮守卫：空池禁用；财务模式全港股禁用、混合提示跳过。
+        Q5：追加取数上限提示。"""
         pool = pool or []
+        hint_parts = []
         if not pool:
-            return True, "已选池为空——请先从搜索结果勾选标的"
-        if data_type in ("financials", "adj"):
+            hint_parts.append("已选池为空——请先从搜索结果勾选标的")
+        elif data_type in ("financials", "adj"):
             hk_items = [p for p in pool if _is_hk(p)]
             label = "财务数据" if data_type == "financials" else "复权因子"
             if len(hk_items) == len(pool):
                 return True, f"{label}仅支持 A 股，请至少选择一个 A 股标的"
             if hk_items:
-                return False, f"注意：{label}仅支持 A 股，池中 {len(hk_items)} 个港股将被跳过"
-        return False, ""
+                hint_parts.append(f"注意：{label}仅支持 A 股，池中 {len(hk_items)} 个港股将被跳过")
+        # Q5：取数上限提示
+        hint_parts.append("最多同时获取 20 个标的")
+        if pool and len(pool) >= 15:
+            hint_parts.append(f"已选 {len(pool)} 个标的，接近上限")
+        return False if pool else True, "；".join(hint_parts)
 
     @app.callback(
         Output("fetch-status", "children"),
@@ -312,6 +318,20 @@ def register_data_callbacks(app):
         detail_lines = results + errors + skipped
         detail_el = html.Div([html.P(line, className="mb-1")
                               for line in detail_lines[:40]])
+        # Q3：取数后提供跳转链接
+        if results:
+            first_ticker = items[0]["value"]
+            detail_el.children = list(detail_el.children or []) + [
+                html.Hr(className="my-2"),
+                html.Div([
+                    html.A("📋 查看已缓存数据",
+                           href=f"/data-center?tab=tab-cached&focus={first_ticker}",
+                           className="me-3 small"),
+                    html.A("📈 去行情看板",
+                           href=f"/market-watch?focus={first_ticker}",
+                           className="small"),
+                ], className="mt-1"),
+            ]
         # D2：结果只写 fetch-results，已选池不受影响
         return summary, detail_el
 
@@ -323,3 +343,19 @@ def register_data_callbacks(app):
         if data_type == "minute":
             return {"display": "block"}
         return {"display": "none"}
+
+    # Q1：分钟线自动调整日期范围
+    @app.callback(
+        Output("date-range-picker", "start_date"),
+        Output("date-range-picker", "end_date"),
+        Input("data-type-radio", "value"),
+        prevent_initial_call=True,
+    )
+    def on_data_type_change(data_type):
+        import datetime
+        today = datetime.date.today()
+        if data_type == "minute":
+            start = (today - datetime.timedelta(days=7)).isoformat()
+            return start, today.isoformat()
+        # 日线/复权/财务恢复默认当年范围
+        return "2024-01-01", "2024-12-31"

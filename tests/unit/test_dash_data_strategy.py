@@ -833,8 +833,8 @@ class TestQuoteCallbacks:
                             CtxStub(triggered=[{"prop_id": "qb-add-btn.n_clicks"}]))
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 1)
-        watchlist, tbl = cb(1, None, None, "600519.SZ", None, "none")
+            cb = _nth(app, 2)
+        watchlist, tbl = cb(1, None, None, ["600519.SZ"], None, "none")
         assert watchlist == ["600519.SZ"]
         assert isinstance(tbl, dash_table.DataTable)
         # 验证确实写入了 tmp 文件（真实读写逻辑，不污染项目磁盘）
@@ -850,7 +850,7 @@ class TestQuoteCallbacks:
             triggered=[{"prop_id": "qb-manual-refresh.n_clicks"}]))
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 1)
+            cb = _nth(app, 2)
         watchlist, tbl = cb(None, 1, None, None, None, "none")
         assert watchlist == []
         assert isinstance(tbl, html.Div)
@@ -861,7 +861,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: FakeDuckDB())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 2)
+            cb = _nth(app, 3)
         assert cb(True) is False
         assert cb(False) is True
 
@@ -871,16 +871,16 @@ class TestQuoteCallbacks:
         _patch_now(monkeypatch, (2024, 1, 3, 10, 0, 0))  # 周三盘中
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 3)
+            cb = _nth(app, 4)
         assert cb("/market-watch", None) is True
 
     def test_check_trading_hours_lunch_closed(self, monkeypatch):
         monkeypatch.setattr(quote_callbacks, "DuckDBManager",
                             lambda *a, **k: FakeDuckDB())
-        _patch_now(monkeypatch, (2024, 1, 3, 12, 30, 0))  # 周三午休（修复前误判为开市）
+        _patch_now(monkeypatch, (2024, 1, 3, 12, 30, 0))  # 周三午休
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 3)
+            cb = _nth(app, 4)
         assert cb("/market-watch", None) is False
 
     def test_check_trading_hours_weekend_closed(self, monkeypatch):
@@ -889,7 +889,7 @@ class TestQuoteCallbacks:
         _patch_now(monkeypatch, (2024, 1, 6, 10, 0, 0))  # 周六
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 3)
+            cb = _nth(app, 4)
         assert cb("/market-watch", None) is False
 
     def test_check_trading_hours_after_close(self, monkeypatch):
@@ -898,7 +898,7 @@ class TestQuoteCallbacks:
         _patch_now(monkeypatch, (2024, 1, 3, 16, 0, 0))  # 收盘后
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 3)
+            cb = _nth(app, 4)
         assert cb("/market-watch", None) is False
 
     def test_fetch_quote_data_daily_fallback_badge(self, monkeypatch):
@@ -932,7 +932,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: FakeDuckDB())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 4)
+            cb = _nth(app, 5)
         res = cb(["600519.SH", "000001.SZ"])
         text = "".join(_text(res))
         assert "实时覆盖 0/2" in text
@@ -946,7 +946,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: FakeCatalog())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 5)
+            cb = _nth(app, 6)
         wl, tbl, new_search, chart = cb("?focus=600519.SH", "/market-watch", ["000001.SZ"])
         assert wl[0] == "600519.SH" and wl == ["600519.SH", "000001.SZ"]
         assert new_search == ""  # focus 已清除
@@ -966,7 +966,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: DeadCatalog())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 5)
+            cb = _nth(app, 6)
         wl, tbl, new_search, chart = cb("?focus=999999.SH", "/market-watch", ["000001.SZ"])
         assert wl is no_update and tbl is no_update
         assert new_search == ""
@@ -1023,7 +1023,7 @@ class TestQuoteCallbacks:
             triggered=[{"prop_id": "qb-manual-refresh.n_clicks"}]))
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 1)
+            cb = _nth(app, 2)
         watchlist, tbl = cb(None, 1, None, None, ["600519.SH", "999999.SH"], "none")
         assert watchlist == ["600519.SH"]
         assert isinstance(tbl, dash_table.DataTable)
@@ -1036,7 +1036,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: FakeDuckDB())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 7)
+            cb = _nth(app, 8)
         assert cb("/data-center") == (no_update, no_update, no_update)
 
     def test_prune_watchlist_on_load_prunes_and_renders(self, monkeypatch, tmp_path):
@@ -1057,7 +1057,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: PruneCatalog())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 7)
+            cb = _nth(app, 8)
         kept, tbl, chart = cb("/market-watch")
         assert kept == ["600519.SH"]
         assert chart == "600519.SH"
@@ -1076,7 +1076,7 @@ class TestQuoteCallbacks:
                             lambda *a, **k: FakeDuckDB())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
-            cb = _nth(app, 7)
+            cb = _nth(app, 8)
         kept, tbl, chart = cb("/market-watch")
         assert kept == []
         assert chart is None
