@@ -95,4 +95,7 @@ def init_on_startup():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    # use_reloader=False：Werkzeug 热重载会起父+子两个进程，双双打开 DuckDB
+    # 独占锁必然冲突；曾导致抢锁失败方误判「库损坏」而清库（symbol_dict 与
+    # 缓存全丢、搜索无结果）。日常运行必须单进程持锁。
+    app.run(debug=True, use_reloader=False, host="0.0.0.0", port=8050)

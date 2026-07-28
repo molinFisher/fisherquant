@@ -51,6 +51,54 @@ def test_wal_only_corruption_preserves_data():
     _reset_singleton()
 
 
+def test_lock_conflict_never_rebuilds(monkeypatch):
+    """另一进程持有 DuckDB 锁 → 抛异常拒绝重建，主库文件与数据必须原样保留。
+
+    修复前：锁冲突被误判为「库损坏」，好库被挪成 .corrupt 并新建空库，
+    Flask reloader 双进程 / 外部诊断脚本都会随机触发清库（搜索无结果）。
+    注：DuckDB 同进程内共享实例不会撞锁（锁冲突只发生在跨进程），
+    故用 monkeypatch 模拟跨进程锁异常。
+    """
+    import pytest
+    from fisher.store import engine as engine_mod
+
+    tmp = tempfile.mkdtemp()
+    db_path = os.path.join(tmp, "locked.db")
+    _make_good_db(db_path)
+
+    real_connect = duckdb.connect
+
+    def fake_connect(path, *a, **kw):
+        if str(path) == db_path:
+            raise duckdb.IOException(
+                f'Could not set lock on file "{db_path}": '
+                "Conflicting lock is held by another process (PID 99999)")
+        return real_connect(path, *a, **kw)
+
+    monkeypatch.setattr(engine_mod.duckdb, "connect", fake_connect)
+
+    _reset_singleton()
+    try:
+        with pytest.raises(Exception) as ei:
+            # 构造即连接，锁冲突应直接抛出而非重建
+            mgr = DuckDBManager(db_path)
+            mgr.connect(db_path)
+        # 必须是锁冲突类异常，而非静默重建
+        assert "lock" in str(ei.value).lower()
+        # 主库文件原地未动、未产生 .corrupt 备份
+        assert os.path.exists(db_path), "主库文件被挪走了！"
+        siblings = os.listdir(tmp)
+        assert not any(".corrupt." in s for s in siblings), \
+            f"锁冲突不应产生 corrupt 备份：{siblings}"
+    finally:
+        _reset_singleton()
+
+    # 锁"释放"（还原 connect）后数据完好
+    con = real_connect(db_path, read_only=True)
+    assert con.execute("SELECT COUNT(*) FROM symbol_dict").fetchone()[0] == 2
+    con.close()
+
+
 def test_main_corruption_falls_back_to_empty_rebuild():
     """主库本身损坏 → 兜底备份主库并建空库，且不抛异常。"""
     tmp = tempfile.mkdtemp()

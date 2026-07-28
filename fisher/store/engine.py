@@ -11,6 +11,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# DuckDB 被其他进程持有独占锁时的报错特征（IOException 文案）。
+# 锁冲突 ≠ 文件损坏，识别到这些特征时绝不能走「备份重建空库」恢复路径。
+_LOCK_CONFLICT_MARKERS = (
+    "could not set lock",
+    "conflicting lock",
+    "lock on file",
+    "being used by another process",
+)
+
+
+def _is_lock_conflict(e: BaseException) -> bool:
+    msg = str(e).lower()
+    return any(m in msg for m in _LOCK_CONFLICT_MARKERS)
+
 
 class DuckDBManager:
     """Single-write + read-pool DuckDB connection manager.
@@ -70,6 +84,13 @@ class DuckDBManager:
                 self._write_conn = duckdb.connect(path)
                 self._write_conn.execute("SELECT 1")  # 探针
             except Exception as e:
+                if _is_lock_conflict(e):
+                    # 另一进程正持有 DuckDB 独占锁（如 Flask reloader 双进程、
+                    # 外部诊断脚本）。这不是文件损坏，绝不能走重建——否则会把
+                    # 好库挪成 .corrupt 并建空库，清空全部缓存与标的字典。
+                    logger.error(
+                        "DuckDB 文件被其他进程锁定，拒绝重建以保护数据: %s", e)
+                    raise
                 logger.warning("DuckDB 连接/校验失败 %s (%s)，尝试备份并重建", path, e)
                 self._rebuild_and_reconnect_locked(path)
 
@@ -115,6 +136,10 @@ class DuckDBManager:
                 break
             except Exception:
                 pass
+
+    @staticmethod
+    def _is_lock_conflict_exc(e: BaseException) -> bool:
+        return _is_lock_conflict(e)
 
     def _rebuild_and_reconnect_locked(self, path: str):
         """在持锁状态下从 WAL 损坏中恢复，尽量保留已提交数据（PRD §16.13 损坏自恢复）。
