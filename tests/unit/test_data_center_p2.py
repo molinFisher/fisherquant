@@ -1,6 +1,8 @@
 import time
+from datetime import datetime
 
 from fisher.dash_app.pages import data_center
+from fisher.dash_app.services.auto_load_service import freshness_baseline
 from tests.helpers.dash_harness import capture_dash_callbacks
 
 
@@ -72,9 +74,11 @@ def test_failed_list_renders(monkeypatch):
 def test_reload_force_full_marks_plan(auto_load_service):
     """#42：彻底重下开关 → reload(force_full=True) 生成全量 FULL 计划，普通 reload 复用历史(SKIP)。"""
     svc = auto_load_service
+    # 用动态新鲜基准日写入，避免硬编码日期随真实时间推移而过时(导致 SKIP 误判为 GAP)
+    fresh_date = freshness_baseline("a_share", datetime.now()).isoformat()
     svc._db.execute(
         "INSERT INTO bars_daily (ticker,trade_date,open,high,low,close,volume,amount,market,adj_factor) "
-        "VALUES ('600519.SH','2026-07-24',1,1,1,1,1,1.0,'a_share',1.0)")
+        f"VALUES ('600519.SH','{fresh_date}',1,1,1,1,1,1.0,'a_share',1.0)")
     svc._db.execute(
         "INSERT INTO symbol_dict (ticker,code,name,market) VALUES ('600519.SH','600519','茅台','a_share')")
     # 普通 reload：库有数据 → 至少 600519 被 SKIP

@@ -3,7 +3,7 @@
 覆盖跨层的端到端链路，而非单个纯函数：
   1. refresh_symbol_dict（真库原子写入）→ search_symbols（只读命中）全链路；
   2. 港股通零填充变体检索（"700" → 00700 腾讯控股）；
-  3. 搜索回调 → search-results-store → 选中回填 update_fetch_list 富卡片（双回调 + 真服务 + 真库）；
+  3. 搜索回调 → search-results-store → 勾选入池 → 池 chips 渲染（三回调 + 真服务 + 真库）；
   4. 原子替换：二次刷新用新数据整体替换旧字典；
   5. 空数据源保护：二次刷新数据源为空时保留旧字典不清空；
   6. R-50 legacy 回滚：legacy=true 时走旧 symbol_cache/实时链路，输出旧标签格式；
@@ -94,7 +94,8 @@ def test_refresh_then_search_hk_zero_pad(svc_new, monkeypatch):
 # --------------------------------------------------------------------------- #
 # 3. 搜索回调 → store → 选中回填富卡片（双回调链路）
 # --------------------------------------------------------------------------- #
-def test_search_store_to_fetch_list_card(svc_new, monkeypatch):
+def test_search_store_to_selected_pool(svc_new, monkeypatch):
+    """搜索 → store → 勾选入池 → 池 chips 渲染（PRD v1.1 重设计链路）。"""
     _mock_sources(
         monkeypatch,
         a_rows=[("600519", "贵州茅台")],
@@ -105,16 +106,23 @@ def test_search_store_to_fetch_list_card(svc_new, monkeypatch):
 
     with capture_dash_callbacks() as app:
         data_callbacks.register_data_callbacks(app)
-        cbs = app.all_callbacks()
-    search_cb = cbs[0]          # search_symbols
-    update_fetch_cb = cbs[2]    # update_fetch_list（第 3 个注册）
+    search_cb = app.by_output("search-status")
+    sync_cb = app.by_output("selected-symbols-store")
+    render_cb = app.by_output("selected-pool")
 
-    opts, val, status, store = search_cb("600519")
+    opts, status, store = search_cb("600519")
     assert opts and opts[0]["value"] == "600519.SH"
     assert store and store[0]["name"] == "贵州茅台"
 
-    # 用 store 数据回填选中卡片
-    card = update_fetch_cb("600519.SH", store)
+    # 勾选候选 → 入池
+    class _Ctx:
+        triggered = [{"prop_id": "candidate-list.value", "value": ["600519.SH"]}]
+    monkeypatch.setattr("dash.ctx", _Ctx())
+    pool, _ = sync_cb(["600519.SH"], None, None, None, [], store, [])
+    assert len(pool) == 1 and pool[0]["value"] == "600519.SH"
+
+    # 池 chips 渲染
+    chips = render_cb(pool, "daily")
 
     def _flatten(node):
         out = []
@@ -127,10 +135,10 @@ def test_search_store_to_fetch_list_card(svc_new, monkeypatch):
             out.extend(_flatten(node.children))
         return out
 
-    text = "".join(_flatten(card))
+    text = "".join(_flatten(chips))
     assert "贵州茅台" in text
     assert "600519" in text
-    assert "600519.SH" in text  # 标准代码
+    assert "共 1 个标的" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -210,8 +218,8 @@ def test_cold_start_shows_initializing_when_dict_empty(svc_new, monkeypatch):
     monkeypatch.setattr("fisher.dash_app.services.get_data_service", lambda: svc_new)
     with capture_dash_callbacks() as app:
         data_callbacks.register_data_callbacks(app)
-        search_cb = app.all_callbacks()[0]
-    opts, val, status, store = search_cb("600519")
+        search_cb = app.by_output("search-status")
+    opts, status, store = search_cb("600519")
     assert opts == [] and store == []
     assert "初始化中" in _text(status)
 
@@ -223,8 +231,8 @@ def test_ready_dict_no_match_shows_not_found(svc_new, monkeypatch):
     monkeypatch.setattr("fisher.dash_app.services.get_data_service", lambda: svc_new)
     with capture_dash_callbacks() as app:
         data_callbacks.register_data_callbacks(app)
-        search_cb = app.all_callbacks()[0]
-    opts, val, status, store = search_cb("zzzzzz")
+        search_cb = app.by_output("search-status")
+    opts, status, store = search_cb("zzzzzz")
     assert opts == []
     assert "未找到" in _text(status)
 

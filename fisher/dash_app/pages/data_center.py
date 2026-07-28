@@ -25,13 +25,13 @@ def create_data_center_layout():
                 className="mb-3",
             ),
             dcc.Store(id="search-results-store"),
+            dcc.Store(id="selected-symbols-store", data=[]),
             dcc.Store(id="fetch-progress-status"),
             dcc.Store(id="fetch-progress-store"),
             dcc.Store(id="toast-trigger"),
             dcc.Interval(id="fetch-progress-poll", interval=1000),
             dcc.Interval(id="auto-load-progress-poll", interval=3000),
             html.Div(id="data-center-content"),
-            _create_financials_modal(),
         ]
     )
 
@@ -49,11 +49,29 @@ def _create_query_tab():
                                     dbc.Input(
                                         id="symbol-search-input",
                                         type="text",
-                                        placeholder="输入股票代码或名称（至少2个字符）...",
+                                        placeholder="搜索名称/代码，或粘贴多代码（逗号/空格/换行分隔）",
                                         debounce=True,
                                     ),
-                                    dcc.Dropdown(id="symbol-search-results", placeholder="搜索结果将显示在这里..."),
                                     html.Div(id="search-status", className="text-muted small mt-1"),
+                                    # FR-2/3：待选框（勾选式候选清单）+ 全选/反选工具条
+                                    html.Div(
+                                        [
+                                            dbc.Button("全选", id="candidate-select-all-btn",
+                                                       color="link", size="sm", className="p-0 me-3"),
+                                            dbc.Button("反选", id="candidate-invert-btn",
+                                                       color="link", size="sm", className="p-0"),
+                                        ],
+                                        className="mt-2 mb-1",
+                                    ),
+                                    html.Div(
+                                        dbc.Checklist(
+                                            id="candidate-list",
+                                            options=[],
+                                            value=[],
+                                            className="small",
+                                        ),
+                                        style={"maxHeight": "320px", "overflowY": "auto"},
+                                    ),
                                 ]
                             ),
                         ],
@@ -99,18 +117,16 @@ def _create_query_tab():
                                         ],
                                         style={"display": "none"},
                                     ),
-                                    dbc.Label("批量输入", className="mt-2"),
-                                    dcc.Textarea(
-                                        id="batch-symbols-input",
-                                        placeholder="输入多个标的，逗号或换行分隔...",
-                                        rows=3,
-                                    ),
                                     dbc.Button(
                                         "开始获取数据",
                                         id="fetch-data-button",
                                         color="primary",
                                         className="mt-2 w-100",
+                                        disabled=True,
                                     ),
+                                    # FR-5：按钮不可用时常驻原因提示（DES-4）
+                                    html.Div(id="fetch-guard-hint",
+                                             className="text-muted small mt-1"),
                                     dbc.Progress(
                                         id="fetch-progress-bar",
                                         value=0,
@@ -128,31 +144,29 @@ def _create_query_tab():
             ),
             dbc.Col(
                 [
+                    # FR-4：已选标的池（单一事实来源 selected-symbols-store，D2：取数结果不覆盖池）
                     dbc.Card(
                         [
-                            dbc.CardHeader("获取列表"),
-                            dbc.CardBody(id="fetch-list", children="请先搜索并选择标的"),
-                        ]
-                    ),
-                    html.Br(),
-                    dbc.Card(
-                        [
-                            dbc.CardHeader("财务数据查询"),
-                            dbc.CardBody(
-                                [
-                                    dbc.Input(
-                                        id="financials-symbol-input",
-                                        placeholder="输入标的代码...",
-                                        className="mb-2",
-                                    ),
-                                    dbc.Button(
-                                        "查询财务数据",
-                                        id="query-financials-btn",
-                                        color="info",
-                                        className="w-100",
-                                    ),
-                                ]
+                            dbc.CardHeader(
+                                html.Div(
+                                    [
+                                        html.Span("已选标的池"),
+                                        dbc.Button("清空已选", id="clear-selected-btn",
+                                                   color="link", size="sm",
+                                                   className="p-0 float-end"),
+                                    ]
+                                )
                             ),
+                            dbc.CardBody(id="selected-pool",
+                                         children="尚未选择标的（从左侧搜索结果勾选）"),
+                        ],
+                        className="mb-3",
+                    ),
+                    dbc.Card(
+                        [
+                            dbc.CardHeader("获取结果"),
+                            dbc.CardBody(id="fetch-results",
+                                         children="取数结果将显示在这里"),
                         ]
                     ),
                 ],
@@ -255,20 +269,6 @@ def _create_auto_load_tab():
                 is_open=False,
             ),
         ]
-    )
-
-
-def _create_financials_modal():
-    return dbc.Modal(
-        [
-            dbc.ModalHeader(dbc.ModalTitle("财务数据")),
-            dbc.ModalBody(id="financials-modal-body", children="加载中..."),
-            dbc.ModalFooter(
-                dbc.Button("关闭", id="close-financials-modal", className="ms-auto")
-            ),
-        ],
-        id="financials-modal",
-        size="lg",
     )
 
 

@@ -16,12 +16,31 @@ class _CallbackRegistry:
 
     def register(self, outputs, func):
         self._all.append(func)
-        outs = outputs if isinstance(outputs, (list, tuple)) else [outputs]
+        outs = []
+
+        def _flatten(node):
+            if isinstance(node, (list, tuple)):
+                for n in node:
+                    _flatten(n)
+            elif node is not None:
+                outs.append(node)
+
+        _flatten(outputs)
         for o in outs:
+            # 跳过 Input/State（多输出回调以独立位置参数传入时，args 中混有非 Output）
+            if type(o).__name__ in ("Input", "State"):
+                continue
             cid = getattr(o, "component_id", None) or getattr(o, "id", None)
             if cid is None:
                 continue
+            if isinstance(cid, dict):  # pattern-matching id 不做索引
+                continue
             self._by_id.setdefault(cid, []).append(func)
+            # 同一组件 id 的不同属性可能属于不同回调（如 candidate-list 的
+            # options 由搜索回调写、value 由池同步回调写）——按 "id.prop" 精确索引
+            prop = getattr(o, "component_property", None)
+            if prop:
+                self._by_id.setdefault(f"{cid}.{prop}", []).append(func)
 
     def get(self, component_id):
         funcs = self._by_id.get(component_id)
@@ -47,7 +66,9 @@ class FakeDashApp:
         reg = self._reg
 
         def decorator(*args, **kwargs):
-            outputs = args[0] if args else None
+            # 传入全部位置参数：多输出回调的 Output 可能是多个独立参数，
+            # register 内部会跳过 Input/State，仅索引 Output 的组件 id。
+            outputs = list(args) if args else None
 
             def wrap(func):
                 reg.register(outputs, func)
@@ -58,6 +79,10 @@ class FakeDashApp:
         return decorator
 
     def get_callback(self, component_id):
+        return self._reg.get(component_id)
+
+    def by_output(self, component_id):
+        """按 Output 组件 id 取回调（T9：消除 cbs[N] 顺序依赖的推荐入口）。"""
         return self._reg.get(component_id)
 
     def all_callbacks(self):
@@ -83,7 +108,7 @@ def capture_dash_callbacks(app=None):
     reg = app._reg
 
     def capturing_decorator(*args, **kwargs):
-        outputs = args[0] if args else None
+        outputs = list(args) if args else None
 
         def wrap(func):
             reg.register(outputs, func)

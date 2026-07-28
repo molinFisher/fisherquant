@@ -51,12 +51,11 @@ def uat_service(in_memory_db, limiter):
 
 
 def _search_cb_with(svc, monkeypatch):
-    """捕获 search_symbols 回调并注入指定服务。"""
+    """捕获 search_symbols 回调并注入指定服务（by_output 取回调，无顺序依赖）。"""
     monkeypatch.setattr("fisher.dash_app.services.get_data_service", lambda: svc)
     with capture_dash_callbacks() as app:
         data_callbacks.register_data_callbacks(app)
-        cbs = app.all_callbacks()
-    return cbs[0], cbs[2]  # search_symbols, update_fetch_list
+    return app.by_output("search-status"), app.by_output("selected-pool")
 
 
 def _text(node):
@@ -111,7 +110,7 @@ def test_uat_04_hk_connect_hit(uat_service, q):
 # UAT-5：minimax（非上市）→ 空结果 + 引导文案，无报错/无静默丢结果
 def test_uat_05_no_match_guidance(uat_service, monkeypatch):
     search_cb, _ = _search_cb_with(uat_service, monkeypatch)
-    opts, val, status, store = search_cb("minimax")
+    opts, status, store = search_cb("minimax")
     assert opts == [] and store == []
     txt = _text(status)
     assert "未找到" in txt  # 友好引导，而非静默/报错
@@ -120,8 +119,8 @@ def test_uat_05_no_match_guidance(uat_service, monkeypatch):
 # UAT-6：%'-- → 无报错，按字面量搜索返回空结果引导（R-22 转义）
 def test_uat_06_sql_special_chars(uat_service, monkeypatch):
     search_cb, _ = _search_cb_with(uat_service, monkeypatch)
-    # 不应抛异常
-    opts, val, status, store = search_cb("%'--")
+    # 不应抛异常（%'-- 无空白/逗号，走单 token 链路）
+    opts, status, store = search_cb("%'--")
     assert opts == []           # 字面量匹配无命中
     assert "未找到" in _text(status)
 

@@ -182,34 +182,40 @@ def _patch_callback_context(monkeypatch, triggered):
 # 1) data_callbacks
 # =========================================================================== #
 class TestDataCallbacks:
+    """数据查询 Tab 重设计（PRD v1.1）：改用 by_output 取回调，消除顺序依赖。"""
+
     def test_registers(self):
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
         assert app.callback_count() >= 6
-        assert callable(_nth(app, 0))   # search_symbols
-        assert callable(_nth(app, 1))   # fetch_data
+        assert callable(app.by_output("search-status"))       # search_symbols
+        assert callable(app.by_output("fetch-results"))        # fetch_data
+        assert callable(app.by_output("selected-symbols-store"))  # sync_selected_pool
+        assert callable(app.by_output("fetch-guard-hint"))     # guard_fetch_button
 
     def test_search_symbols_too_short(self, monkeypatch):
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: FakeService())
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 0)
-        # V1.2：回调现返回 4 元组（新增 search-results-store 数据），状态为组件
-        opts, val, status, store = cb("a")
-        assert opts == [] and val is None and store == []
+            cb = app.by_output("search-status")
+        # 重设计：回调返回 3 元组（options / status / store）
+        opts, status, store = cb("a")
+        assert opts == [] and store == []
         assert "至少" in "".join(_text(status))
 
     def test_search_symbols_matches(self, monkeypatch):
         fake = FakeService(search_symbols=[
-            {"label": "600519 贵州茅台", "value": "600519.SH", "market": "a_share"}])
+            {"label": "600519 贵州茅台", "value": "600519.SH",
+             "code": "600519", "name": "贵州茅台", "market": "a_share"}])
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: fake)
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 0)
-        opts, val, status, store = cb("6005")
-        assert opts == [{"label": "600519 贵州茅台", "value": "600519.SH"}]
+            cb = app.by_output("search-status")
+        opts, status, store = cb("6005")
+        assert opts and opts[0]["value"] == "600519.SH"
+        assert "贵州茅台" in opts[0]["label"]
         assert "找到 1 个结果" in "".join(_text(status))
         assert store == fake.data["search_symbols"]  # 完整结构写入 store
 
@@ -221,92 +227,96 @@ class TestDataCallbacks:
                             lambda: _Boom())
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 0)
-        opts, val, status, store = cb("600519")
+            cb = app.by_output("search-status")
+        opts, status, store = cb("600519")
         # R-31：不再暴露技术堆栈，改为友好文案
         assert opts == [] and store == []
         assert "暂时不可用" in "".join(_text(status))
+
+    def test_search_multi_code_paste(self, monkeypatch):
+        """FR-3：粘贴多代码 → 逐 token 命中合并；未收录标灰禁用。"""
+        dict_data = {
+            "600519": {"label": "600519 贵州茅台", "value": "600519.SH",
+                       "code": "600519", "name": "贵州茅台", "market": "a_share"},
+            "000001": {"label": "000001 平安银行", "value": "000001.SZ",
+                       "code": "000001", "name": "平安银行", "market": "a_share"},
+            "300750": {"label": "300750 宁德时代", "value": "300750.SZ",
+                       "code": "300750", "name": "宁德时代", "market": "a_share"},
+        }
+
+        class _Dict(FakeService):
+            def search_symbols(self, q):
+                hit = dict_data.get(q)
+                return [hit] if hit else []
+
+        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
+                            lambda: _Dict())
+        with capture_dash_callbacks() as app:
+            data_callbacks.register_data_callbacks(app)
+            cb = app.by_output("search-status")
+        opts, status, store = cb("600519 000001, 300750\n999999")
+        values = [o["value"] for o in opts]
+        assert "600519.SH" in values and "000001.SZ" in values and "300750.SZ" in values
+        assert len(store) == 3
+        # 未收录 token 标灰禁用
+        miss = [o for o in opts if o.get("disabled")]
+        assert len(miss) == 1 and "999999" in miss[0]["label"] and "未收录" in miss[0]["label"]
+        assert "未收录 1 个" in "".join(_text(status))
 
     def test_fetch_data_no_symbols(self, monkeypatch):
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: FakeService())
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 1)
-        final = _run_generator(cb(1, None, "", "2024-01-01", "2024-02-01", "daily", ""))
-        assert final[0] == "请先选择或输入标的"
-        assert final[1] == "请先搜索并选择标的"
+            cb = app.by_output("fetch-results")
+        final = _run_generator(cb(1, [], "2024-01-01", "2024-02-01", "daily", ""))
+        assert "勾选标的" in final[0]
 
     def test_fetch_data_success(self, monkeypatch):
-        fake = FakeService(fetch_bars={"600519": {"status": "ok", "count": 5}})
+        fake = FakeService(fetch_bars={"600519.SH": {"status": "ok", "count": 5}})
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: fake)
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 1)
+            cb = app.by_output("fetch-results")
+        pool = [{"value": "600519.SH", "code": "600519",
+                 "name": "贵州茅台", "market": "a_share"}]
         final = _run_generator(
-            cb(1, "600519", "", "2024-01-01", "2024-02-01", "daily", ""))
-        assert isinstance(final[0], html.Div)
-        assert isinstance(final[1], html.Div)
-        assert "✓ 600519: 5条记录" in "".join(_text(final[0]))
+            cb(1, pool, "2024-01-01", "2024-02-01", "daily", ""))
+        assert "成功 1" in final[0]
+        assert "✓ 600519.SH: 5条记录" in "".join(_text(final[1]))
         assert final[2]["current"] == final[2]["total"] == 1
-        assert ("fetch_bars", ["600519"]) in fake.calls
+        assert ("fetch_bars", ["600519.SH"]) in fake.calls
 
-    def test_fetch_data_batch_input(self, monkeypatch):
-        fake = FakeService(fetch_bars={
-            "600519": {"status": "ok", "count": 2},
-            "000001": {"status": "ok", "count": 3},
-        })
+    def test_fetch_data_financials_skips_hk(self, monkeypatch):
+        """产品决策：财务数据仅支持 A 股——池中港股跳过且不调用服务。"""
+        fake = FakeService(fetch_bars={"600519.SH": {"status": "ok", "count": 0}})
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: fake)
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 1)
+            cb = app.by_output("fetch-results")
+        pool = [
+            {"value": "600519.SH", "code": "600519", "name": "贵州茅台",
+             "market": "a_share"},
+            {"value": "00700.HK", "code": "00700", "name": "腾讯控股",
+             "market": "hk_connect"},
+        ]
         final = _run_generator(
-            cb(1, None, "600519, 000001\n", "2024-01-01", "2024-02-01", "daily", ""))
-        assert final[2]["total"] == 2
-        assert "✓ 600519: 2条记录" in "".join(_text(final[0]))
-
-    def test_update_fetch_list(self, monkeypatch):
-        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
-                            lambda: FakeService())
-        with capture_dash_callbacks() as app:
-            data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 2)
-        # V1.2：选中回调现接收 (selected, search-results-store)
-        none_case = cb(None, [])
-        assert none_case == "请先搜索并选择标的"
-        results = [{"value": "600519.SH", "code": "600519", "name": "贵州茅台",
-                    "market": "a_share", "pinyin_abbr": "GZMT"}]
-        sel_case = cb("600519.SH", results)
-        txt = "".join(_text(sel_case))
-        assert "贵州茅台" in txt and "600519" in txt
-
-    def test_clear_single_search_on_batch(self, monkeypatch):
-        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
-                            lambda: FakeService())
-        with capture_dash_callbacks() as app:
-            data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 3)
-        assert cb("600519") is None          # 有批量输入 -> 清空单选
-        assert cb("") is no_update           # 无批量输入 -> 保持不变
+            cb(1, pool, "2024-01-01", "2024-02-01", "financials", ""))
+        txt = "".join(_text(final[1]))
+        assert "⊘ 00700.HK" in txt and "仅支持 A 股" in txt
+        assert ("fetch_bars", ["600519.SH"]) in fake.calls
+        assert all(c[1] != ["00700.HK"] for c in fake.calls)  # 港股未触发取数
 
     def test_toggle_minute_period(self, monkeypatch):
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: FakeService())
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 4)
+            cb = app.by_output("minute-period-container")
         assert cb("minute") == {"display": "block"}
         assert cb("daily") == {"display": "none"}
-
-    def test_close_modal(self, monkeypatch):
-        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
-                            lambda: FakeService())
-        with capture_dash_callbacks() as app:
-            data_callbacks.register_data_callbacks(app)
-            cb = _nth(app, 5)
-        assert cb(1) is False
 
 
 # =========================================================================== #
