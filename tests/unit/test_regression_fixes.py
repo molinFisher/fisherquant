@@ -225,33 +225,13 @@ def strategy_dir():
 
 @pytest.fixture
 def in_memory_db(tmp_path):
+    # v5 起 fetch_bars 会同事务写 cache_catalog，本地建表清单极易漏表；
+    # 统一走 init_schema 与线上建库路径保持一致。
     DuckDBManager._instance = None
     db_path = str(tmp_path / "test_reg.db")
     db = DuckDBManager(db_path, read_pool_size=1)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS bars_daily (
-            ticker VARCHAR, trade_date DATE, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
-            adj_factor DOUBLE DEFAULT 1.0,
-            PRIMARY KEY (ticker, trade_date)
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS bars_minute (
-            ticker VARCHAR, bar_time TIMESTAMP, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
-            PRIMARY KEY (ticker, bar_time)
-        )
-    """)
-    # 标的搜索 V1.2：只读标的字典表（R-10），get_cached_table LEFT JOIN 依赖
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS symbol_dict (
-            ticker VARCHAR NOT NULL, code VARCHAR NOT NULL, name VARCHAR NOT NULL,
-            market VARCHAR NOT NULL, pinyin_full VARCHAR DEFAULT '',
-            pinyin_abbr VARCHAR DEFAULT '', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (ticker)
-        )
-    """)
+    from fisher.store.schema import init_schema
+    init_schema(db)
     yield db
     DuckDBManager._instance = None
 

@@ -252,7 +252,6 @@ def register_data_callbacks(app):
     @app.callback(
         Output("fetch-status", "children"),
         Output("fetch-results", "children"),
-        Output("fetch-progress-status", "data"),
         Input("fetch-data-button", "n_clicks"),
         State("selected-symbols-store", "data"),
         State("date-range-picker", "start_date"),
@@ -271,14 +270,14 @@ def register_data_callbacks(app):
         注意：不可用 background=True + yield 生成器——Dash 后台回调不支持
         生成器（diskcache pickle 失败：cannot pickle 'generator' object），
         且后台回调在独立进程运行会与主进程的 DuckDB 独占锁冲突。
-        单次上限 MAX_FETCH_SYMBOLS(20) 个标的，同步执行可接受；
-        进度在完成时一次性写入 fetch-progress-status。
+        单次上限 MAX_FETCH_SYMBOLS(20) 个标的，同步执行可接受。
+        取数期间按钮显示「获取中...」，结果一次写入 fetch-results（无进度条）。
         """
         pool = pool or []
         items = _dedupe_by_value([p for p in pool if p.get("value")])[:MAX_FETCH_SYMBOLS]
 
         if not items:
-            return "请先从搜索结果勾选标的", "取数结果将显示在这里", {}
+            return "请先从搜索结果勾选标的", "取数结果将显示在这里"
 
         svc = get_data_service()
         total = len(items)
@@ -312,7 +311,7 @@ def register_data_callbacks(app):
         detail_el = html.Div([html.P(line, className="mb-1")
                               for line in detail_lines[:40]])
         # D2：结果只写 fetch-results，已选池不受影响
-        return summary, detail_el, {"current": total, "total": total}
+        return summary, detail_el
 
     @app.callback(
         Output("minute-period-container", "style"),

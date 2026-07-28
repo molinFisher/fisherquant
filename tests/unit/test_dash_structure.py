@@ -58,7 +58,7 @@ class TestRoutingMap:
     def test_nav_ids_map_to_pages(self):
         for nav_id in PAGE_TO_NAV_ID.values():
             assert nav_id in PAGE_MAP or nav_id in (
-                "data-center", "market-watch", "strategy-center",
+                "home", "data-center", "market-watch", "strategy-center",
                 "factor-center", "backtest-center", "visual-dashboard",
                 "report-center", "settings",
             )

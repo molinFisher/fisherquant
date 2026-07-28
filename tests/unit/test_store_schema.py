@@ -90,3 +90,86 @@ class TestMigration:
             )
             col_names = set(cols["column_name"].to_list())
             assert "turnover" in col_names
+
+
+class TestSchemaV5CacheCatalog:
+    def test_init_schema_creates_v5_assets(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = DuckDBEngine(str(Path(d) / "test.db"))
+            init_schema(engine)
+            row = engine.query_df("SELECT MAX(version) AS v FROM schema_version")
+            assert row["v"][0] == SCHEMA_VERSION
+
+            tables = engine.query_df(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+            )
+            names = set(tables["table_name"].to_list())
+            assert {"cache_catalog", "adj_factors", "financials"} <= names
+            assert "v_cache_summary" in names
+
+    def test_bars_minute_has_period_column(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = DuckDBEngine(str(Path(d) / "test.db"))
+            init_schema(engine)
+            cols = engine.query_df(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='bars_minute'"
+            )
+            assert "period" in set(cols["column_name"].to_list())
+
+    def test_snapshots_new_pk_and_change_pct(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = DuckDBEngine(str(Path(d) / "test.db"))
+            init_schema(engine)
+            cols = engine.query_df(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='snapshots'"
+            )
+            col_names = set(cols["column_name"].to_list())
+            assert "change_pct" in col_names
+            assert "id" not in col_names
+            # 新主键为 (ticker, ts)，可幂等 upsert
+            engine.execute(
+                "INSERT INTO snapshots (ticker, ts, last_price, change_pct) VALUES ('600519.SH', '2025-01-02 09:31:00', 1500.0, 1.2)"
+            )
+            engine.execute(
+                "INSERT OR REPLACE INTO snapshots (ticker, ts, last_price, change_pct) VALUES ('600519.SH', '2025-01-02 09:31:00', 1510.0, 1.8)"
+            )
+            n = engine.query_df("SELECT COUNT(*) AS c FROM snapshots")["c"][0]
+            assert n == 1
+
+    def test_migrate_v4_rebuilds_snapshots_pk(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = DuckDBEngine(str(Path(d) / "test.db"))
+            # 模拟 v4 库：旧 snapshots 主键为 id
+            engine.execute(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            engine.execute("INSERT INTO schema_version (version) VALUES (4)")
+            engine.execute(
+                "CREATE TABLE snapshots (id BIGINT PRIMARY KEY, ticker VARCHAR, ts TIMESTAMP, last_price DOUBLE)"
+            )
+            migrate(engine)
+            row = engine.query_df("SELECT MAX(version) AS v FROM schema_version")
+            assert row["v"][0] == 5
+            cols = engine.query_df(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='snapshots'"
+            )
+            col_names = set(cols["column_name"].to_list())
+            assert "change_pct" in col_names and "id" not in col_names
+
+    def test_migrate_refuses_nonempty_snapshots(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = DuckDBEngine(str(Path(d) / "test.db"))
+            engine.execute(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            engine.execute("INSERT INTO schema_version (version) VALUES (4)")
+            engine.execute(
+                "CREATE TABLE snapshots (id BIGINT PRIMARY KEY, ticker VARCHAR, ts TIMESTAMP, last_price DOUBLE)"
+            )
+            engine.execute(
+                "INSERT INTO snapshots (id, ticker, ts) VALUES (1, '600519.SH', now())"
+            )
+            import pytest
+
+            with pytest.raises(RuntimeError):
+                migrate(engine)

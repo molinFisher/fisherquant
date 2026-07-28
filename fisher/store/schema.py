@@ -1,6 +1,8 @@
+import logging
+
 from .engine import DuckDBEngine
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 标的搜索 V1.2（PRD FR-4.x）：只读标的字典表，替代旧 symbol_cache。
 # - ticker 为标准化主键（600519.SH / 00700.HK，港股零填充 5 位，见 R-01）
@@ -38,6 +40,89 @@ _SYMBOL_LOAD_STATE_DDL = """
     )
 """
 
+# --- v5 新增 DDL 常量（缓存数据类型扩展 V1.4，PRD §7）---
+# cache_catalog：联动中枢，逐标的 × 5 类数据资产覆盖度 + 时间边界 + 自动加载开关。
+_CACHE_CATALOG_DDL = """
+    CREATE TABLE IF NOT EXISTS cache_catalog (
+        ticker            VARCHAR PRIMARY KEY,
+        market            VARCHAR,
+        name              VARCHAR,
+        has_daily         BOOLEAN DEFAULT FALSE,
+        has_minute        BOOLEAN DEFAULT FALSE,
+        has_realtime      BOOLEAN DEFAULT FALSE,
+        has_adj           BOOLEAN DEFAULT FALSE,
+        has_financials    BOOLEAN DEFAULT FALSE,
+        auto_load_enabled BOOLEAN DEFAULT FALSE,
+        daily_start       DATE,
+        daily_end         DATE,
+        minute_start      TIMESTAMP,
+        minute_end        TIMESTAMP,
+        realtime_ts       TIMESTAMP,
+        adj_type          VARCHAR,
+        fin_report_end    DATE,
+        last_update       TIMESTAMP,
+        updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+"""
+
+_ADJ_FACTORS_DDL = """
+    CREATE TABLE IF NOT EXISTS adj_factors (
+        ticker     VARCHAR NOT NULL,
+        trade_date DATE NOT NULL,
+        adj_type   VARCHAR NOT NULL,
+        adj_factor DOUBLE NOT NULL,
+        PRIMARY KEY (ticker, trade_date, adj_type)
+    )
+"""
+
+_FINANCIALS_DDL = """
+    CREATE TABLE IF NOT EXISTS financials (
+        ticker      VARCHAR NOT NULL,
+        report_date DATE NOT NULL,
+        report_type VARCHAR,
+        indicator   VARCHAR NOT NULL,
+        value       DOUBLE,
+        unit        VARCHAR,
+        PRIMARY KEY (ticker, report_date, indicator)
+    )
+"""
+
+# 此处用 IF NOT EXISTS 创建新主键 (ticker, ts) 的 snapshots。
+# 对全新库直接建新表；对存量 v4 库旧 snapshots（id BIGINT PK）已存在故 IF NOT EXISTS 跳过，
+# 真正重建发生在 _MIGRATIONS[5] 的 DROP+CREATE（带空表断言保护，见验收 17）。
+_SNAPSHOTS_DDL = """
+    CREATE TABLE IF NOT EXISTS snapshots (
+        ticker      VARCHAR NOT NULL,
+        ts          TIMESTAMP NOT NULL,
+        last_price  DOUBLE,
+        open        DOUBLE,
+        high        DOUBLE,
+        low         DOUBLE,
+        volume      BIGINT,
+        amount      DOUBLE,
+        pre_close   DOUBLE,
+        market      VARCHAR DEFAULT 'a_share',
+        change_pct  DOUBLE,
+        PRIMARY KEY (ticker, ts)
+    )
+"""
+
+# 目录聚合视图：供缓存目录页按类型统计条数（FR-8.2）与看板健康度共用。
+_CACHE_SUMMARY_VIEW_DDL = """
+    CREATE OR REPLACE VIEW v_cache_summary AS
+    SELECT
+        c.ticker, c.name, c.market, c.auto_load_enabled,
+        c.has_daily, c.has_minute, c.has_realtime, c.has_adj, c.has_financials,
+        c.daily_start, c.daily_end, c.realtime_ts,
+        (SELECT COUNT(*) FROM bars_daily d WHERE d.ticker = c.ticker)  AS daily_rows,
+        (SELECT COUNT(*) FROM bars_minute m WHERE m.ticker = c.ticker) AS minute_rows,
+        (SELECT COUNT(*) FROM snapshots  s WHERE s.ticker = c.ticker)  AS realtime_rows,
+        (SELECT COUNT(*) FROM adj_factors a WHERE a.ticker = c.ticker) AS adj_rows,
+        (SELECT COUNT(*) FROM financials f WHERE f.ticker = c.ticker)  AS fin_rows
+    FROM cache_catalog c
+"""
+
+
 _TABLES = [
     """
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -74,21 +159,12 @@ _TABLES = [
         PRIMARY KEY (ticker, bar_time)
     )
     """,
-    """
-    CREATE TABLE IF NOT EXISTS snapshots (
-        id BIGINT PRIMARY KEY,
-        ticker VARCHAR NOT NULL,
-        ts TIMESTAMP NOT NULL,
-        last_price DOUBLE,
-        open DOUBLE,
-        high DOUBLE,
-        low DOUBLE,
-        volume BIGINT,
-        amount DOUBLE,
-        pre_close DOUBLE,
-        market VARCHAR DEFAULT 'a_share'
-    )
-    """,
+    _CACHE_CATALOG_DDL,
+    _ADJ_FACTORS_DDL,
+    _FINANCIALS_DDL,
+    _SNAPSHOTS_DDL,
+    _CACHE_SUMMARY_VIEW_DDL,
+    "ALTER TABLE bars_minute ADD COLUMN IF NOT EXISTS period VARCHAR DEFAULT '5'",
     """
     CREATE TABLE IF NOT EXISTS orders (
         order_id VARCHAR PRIMARY KEY,
@@ -160,6 +236,45 @@ def init_schema(engine: DuckDBEngine) -> None:
             [SCHEMA_VERSION],
         )
 
+    _backfill_cache_catalog(engine)
+
+
+def _backfill_cache_catalog(engine: DuckDBEngine) -> None:
+    """v5 存量回填：老库升级后 cache_catalog 为空，但 bars_daily/bars_minute 已有数据。
+
+    仅在「catalog 为空且 bars_daily 非空」时执行一次（幂等、启动路径零成本）；
+    名称优先取 symbol_dict，缺失时以 ticker 兜底（与 record_coverage 口径一致）。
+    """
+    try:
+        cat = engine.query_df("SELECT COUNT(*) AS c FROM cache_catalog")["c"][0]
+        bars = engine.query_df("SELECT COUNT(*) AS c FROM bars_daily")["c"][0]
+        if int(cat or 0) > 0 or int(bars or 0) == 0:
+            return
+        engine.execute(
+            """
+            INSERT OR IGNORE INTO cache_catalog
+                (ticker, market, name, has_daily, daily_start, daily_end)
+            SELECT d.ticker,
+                   COALESCE(MAX(d.market), 'a_share'),
+                   COALESCE(MAX(s.name), d.ticker),
+                   TRUE, MIN(d.trade_date), MAX(d.trade_date)
+            FROM bars_daily d
+            LEFT JOIN symbol_dict s ON s.ticker = d.ticker
+            GROUP BY d.ticker
+            """
+        )
+        engine.execute(
+            """
+            UPDATE cache_catalog SET has_minute = TRUE,
+                   minute_start = agg.mn, minute_end = agg.mx
+            FROM (SELECT ticker, MIN(bar_time) AS mn, MAX(bar_time) AS mx
+                  FROM bars_minute GROUP BY ticker) agg
+            WHERE cache_catalog.ticker = agg.ticker
+            """
+        )
+    except Exception:  # 回填失败不阻塞启动（目录可由后续写路径自愈）
+        logging.getLogger(__name__).warning("cache_catalog 存量回填失败", exc_info=True)
+
 
 _MIGRATIONS: dict[int, list[str]] = {
     2: [
@@ -178,12 +293,35 @@ _MIGRATIONS: dict[int, list[str]] = {
     4: [
         _SYMBOL_LOAD_STATE_DDL,
     ],
+    # V1.4 缓存数据类型扩展：重建 snapshots 主键为 (ticker, ts)（空表断言见 migrate 守卫）；
+    # cache_catalog/adj_factors/financials 视图与 period 列已由 init_schema 的 _TABLES 兜底建好，
+    # 此处幂等重建以保证存量库与全新库最终一致。
+    5: [
+        "DROP TABLE IF EXISTS snapshots",
+        _SNAPSHOTS_DDL,
+        _CACHE_CATALOG_DDL,
+        _ADJ_FACTORS_DDL,
+        _FINANCIALS_DDL,
+        _CACHE_SUMMARY_VIEW_DDL,
+        "ALTER TABLE bars_minute ADD COLUMN IF NOT EXISTS period VARCHAR DEFAULT '5'",
+    ],
 }
 
 
 def migrate(engine: DuckDBEngine) -> None:
     row = engine.query_df("SELECT MAX(version) AS v FROM schema_version")
     current = row["v"][0] or 0
+    # v5 迁移将重建 snapshots 主键，须先断言存量快照为空，避免误删真实数据（验收 17）
+    if current < 5:
+        try:
+            cnt = engine.query_df("SELECT COUNT(*) AS c FROM snapshots")["c"][0]
+        except Exception:
+            cnt = 0
+        if cnt and int(cnt) > 0:
+            raise RuntimeError(
+                f"snapshots 存量 {int(cnt)} 行非空，拒绝 v5 主键重建迁移；"
+                "请先导出/清理快照后再升级。"
+            )
     if current < SCHEMA_VERSION:
         init_schema(engine)
 

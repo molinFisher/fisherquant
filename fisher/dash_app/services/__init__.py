@@ -11,6 +11,7 @@ _limiter_instance: RateLimiter | None = None
 _data_service_instance = None
 _auto_load_service_instance = None
 _strategy_service_instance = None
+_cache_catalog_service_instance = None
 
 
 def get_db() -> DuckDBManager:
@@ -54,6 +55,14 @@ def get_auto_load_service(scheduler=None):
         from .auto_load_service import AutoLoadService
         _auto_load_service_instance = AutoLoadService(get_db(), get_limiter(), scheduler)
     return _auto_load_service_instance
+
+
+def get_cache_catalog_service() -> "CacheCatalogService":
+    global _cache_catalog_service_instance
+    if _cache_catalog_service_instance is None:
+        from .cache_catalog_service import CacheCatalogService
+        _cache_catalog_service_instance = CacheCatalogService(get_db())
+    return _cache_catalog_service_instance
 
 
 def get_strategy_service(strategies_dir: str | None = None):

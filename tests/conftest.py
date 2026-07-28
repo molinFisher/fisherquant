@@ -19,34 +19,10 @@ def in_memory_db(tmp_path):
     DuckDBManager._instance = None
     db_path = str(tmp_path / "test.db")
     db = DuckDBManager(db_path, read_pool_size=1)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS bars_daily (
-            ticker VARCHAR, trade_date DATE, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
-            adj_factor DOUBLE DEFAULT 1.0,
-            PRIMARY KEY (ticker, trade_date)
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS bars_minute (
-            ticker VARCHAR, bar_time TIMESTAMP, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
-            PRIMARY KEY (ticker, bar_time)
-        )
-    """)
-    # 标的搜索 V1.2：只读标的字典表（R-10）
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS symbol_dict (
-            ticker VARCHAR NOT NULL,
-            code VARCHAR NOT NULL,
-            name VARCHAR NOT NULL,
-            market VARCHAR NOT NULL,
-            pinyin_full VARCHAR DEFAULT '',
-            pinyin_abbr VARCHAR DEFAULT '',
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (ticker)
-        )
-    """)
+    # 用完整 init_schema 建库（v5：含 cache_catalog / financials / snapshots 新主键等），
+    # 与线上启动路径一致，避免 fetch_bars 等依赖 catalog 的用例因表缺失而失败。
+    from fisher.store.schema import init_schema
+    init_schema(db)
     yield db
     DuckDBManager._instance = None
 

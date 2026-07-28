@@ -1,7 +1,101 @@
-from dash import Input, Output, State, callback, no_update, html, dash_table
-import dash_bootstrap_components as dbc
+"""已缓存数据目录页回调（PRD FR-8.1 / FR-8.2 / U-1 / U-3）。
 
-from fisher.dash_app.services import get_data_service
+V1.4 起目录页数据源由 bars_daily 聚合切换为 cache_catalog（v_cache_summary 视图）：
+- 每行渲染紧凑覆盖度徽标（日/分/实/复，✓绿✗灰，hover 出类型名 + 边界）；
+- 条数按类型分别统计（日线条数 / 分钟条数）；
+- 「数据类型」多选筛选为 AND 语义（勾选日线+分钟 = 两者兼备的标的）。
+
+轮询（3s）只更新 DataTable.data，绝不重建容器（保留翻页位置，V1.3 回归修复）。
+"""
+
+from dash import Input, Output, State, callback, no_update, html, dash_table
+
+from fisher.dash_app.services import get_data_service, get_cache_catalog_service
+
+# 覆盖度徽标：列名缩写 -> (has_* 字段, 类型全名)。财务为 P2 折叠项，暂不展示（#24）。
+_BADGES = [
+    ("日", "has_daily", "日线"),
+    ("分", "has_minute", "分钟线"),
+    ("实", "has_realtime", "实时快照"),
+    ("复", "has_adj", "复权因子"),
+]
+
+
+def _coverage_markdown(row: dict) -> str:
+    """单元格内紧凑 icon-only 徽标组（U-1）：✓绿 ✗灰，hover 显示类型名与边界。"""
+    spans = []
+    for label, flag_col, full_name in _BADGES:
+        has = bool(row.get(flag_col))
+        if flag_col == "has_daily" and has:
+            tip = f"{full_name} {row.get('daily_start', '')} ~ {row.get('daily_end', '')}"
+        elif flag_col == "has_minute" and has:
+            tip = f"{full_name}（近 60 天窗口）"
+        elif flag_col == "has_realtime" and has:
+            tip = f"{full_name} 最新 {row.get('realtime_ts', '')}"
+        elif has:
+            tip = f"已缓存{full_name}"
+        else:
+            tip = f"未缓存{full_name}"
+        color = "#28a745" if has else "#c8ccd0"
+        spans.append(
+            f'<span title="{tip}" style="color:{color};font-weight:600;'
+            f'margin-right:4px">{label}{"✓" if has else "✗"}</span>'
+        )
+    return "".join(spans)
+
+
+def _catalog_rows(market_filter="all", type_filter=None, text_filter="") -> list[dict]:
+    """从 cache_catalog（v_cache_summary）构建目录页行数据。"""
+    catalog = get_cache_catalog_service()
+    rows = catalog.get_cache_summary(
+        market=market_filter or "all",
+        data_types=list(type_filter or []),
+        text=text_filter or "",
+    )
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "ticker": r.get("ticker", ""),
+                "name": r.get("name", "") or "—",
+                "market": r.get("market", ""),
+                "coverage": _coverage_markdown(r),
+                "daily_rows": r.get("daily_rows", 0),
+                "minute_rows": r.get("minute_rows", 0),
+                "start_date": str(r.get("daily_start") or "—"),
+                "end_date": str(r.get("daily_end") or "—"),
+            }
+        )
+    return out
+
+
+_COLUMNS = [
+    {"name": "代码", "id": "ticker"},
+    {"name": "名称", "id": "name"},
+    {"name": "市场", "id": "market"},
+    {"name": "覆盖度", "id": "coverage", "presentation": "markdown"},
+    {"name": "日线条数", "id": "daily_rows"},
+    {"name": "分钟条数", "id": "minute_rows"},
+    {"name": "起始日期", "id": "start_date"},
+    {"name": "最新日期", "id": "end_date"},
+]
+
+
+def _make_table(rows: list[dict]) -> dash_table.DataTable:
+    return dash_table.DataTable(
+        id="cached-data-table",
+        columns=_COLUMNS,
+        data=rows,
+        row_selectable="multi",
+        page_size=10,
+        markdown_options={"html": True},
+        style_table={"overflowX": "auto"},
+        style_cell={"padding": "8px", "fontSize": "13px"},
+        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
+        ],
+    )
 
 
 def register_data_cache_callbacks(app):
@@ -9,82 +103,80 @@ def register_data_cache_callbacks(app):
         Output("cached-table-container", "children", allow_duplicate=True),
         Input("cache-refresh-btn", "n_clicks"),
         State("data-center-tabs", "active_tab"),
+        State("cache-market-filter", "value"),
+        State("cache-type-filter", "value"),
+        State("cache-filter-input", "value"),
         prevent_initial_call=True,
     )
-    def force_refresh_cached(n, active_tab):
+    def force_refresh_cached(n, active_tab, market_filter=None, type_filter=None,
+                             filter_text=None):
         if active_tab != "tab-cached":
             return no_update
-        return _build_cached_table()
+        return _build_cached_table(market_filter, type_filter, filter_text)
 
     @app.callback(
         Output("cached-table-container", "children"),
         Input("data-center-tabs", "active_tab"),
         Input("cache-market-filter", "value"),
+        Input("cache-type-filter", "value"),
         Input("cache-filter-input", "value"),
         Input("cache-refresh-btn", "n_clicks"),
-        Input("cache-delete-btn", "n_clicks"),
+        Input("cache-delete-confirm-btn", "n_clicks"),
     )
     def render_cached_table(
-        active_tab, market_filter, filter_text, refresh_clicks, delete_clicks
+        active_tab, market_filter, type_filter, filter_text,
+        refresh_clicks, confirm_clicks
     ):
         if active_tab != "tab-cached":
             return no_update
 
-        svc = get_data_service()
-        rows = svc.get_cached_table(
-            market_filter=market_filter or "all",
-            text_filter=filter_text or "",
-        )
+        rows = _catalog_rows(market_filter, type_filter, filter_text)
         if not rows:
             return _empty_cached_table()
-
-        columns = [
-            {"name": "代码", "id": "ticker"},
-            {"name": "名称", "id": "name"},
-            {"name": "市场", "id": "market"},
-            {"name": "数据条数", "id": "records"},
-            {"name": "起始日期", "id": "start_date"},
-            {"name": "最新日期", "id": "end_date"},
-        ]
-        return dash_table.DataTable(
-            id="cached-data-table",
-            columns=columns,
-            data=rows,
-            row_selectable="multi",
-            page_size=10,
-            style_table={"overflowX": "auto"},
-            style_cell={"padding": "8px", "fontSize": "13px"},
-            style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
-            style_data_conditional=[
-                {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
-            ],
-        )
+        return _make_table(rows)
 
     @app.callback(
         Output("cached-table-container", "children", allow_duplicate=True),
-        Input("cache-delete-btn", "n_clicks"),
+        Output("cache-delete-modal", "is_open", allow_duplicate=True),
+        Input("cache-delete-confirm-btn", "n_clicks"),
         State("cached-data-table", "selected_rows"),
         State("cached-data-table", "data"),
+        State("cache-delete-type", "value"),
+        State("cache-market-filter", "value"),
+        State("cache-type-filter", "value"),
+        State("cache-filter-input", "value"),
         prevent_initial_call=True,
     )
-    def delete_selected_rows(n_clicks, selected_rows, table_data):
+    def confirm_delete_selected(n_clicks, selected_rows, table_data,
+                                delete_type="all", market_filter="all",
+                                type_filter=None, filter_text=""):
+        """二次确认后的真正删除（FR-8.3 / 验收 11）。
+
+        整行删除：5 类物理数据 + 目录行全清；
+        按类型删除：仅删该类数据，同事务 has_<type>=FALSE、边界置 NULL，
+        其余类型不受影响（FR-1.5，由服务层保证）。
+        """
         if not selected_rows or not table_data:
-            return no_update
+            return no_update, False
 
         tickers = [table_data[idx]["ticker"] for idx in selected_rows]
         svc = get_data_service()
-        svc.delete_symbols(tickers)
-        return _build_cached_table()
-
+        if (delete_type or "all") == "all":
+            svc.delete_symbols(tickers)
+        else:
+            svc.delete_symbols_by_type(tickers, delete_type)
+        return _build_cached_table(market_filter, type_filter, filter_text), False
 
     @app.callback(
         Output("cached-data-table", "data"),
         Input("auto-load-progress-poll", "n_intervals"),
         State("data-center-tabs", "active_tab"),
         State("cache-market-filter", "value"),
+        State("cache-type-filter", "value"),
         State("cache-filter-input", "value"),
     )
-    def poll_update_cached_data(load_poll, active_tab, market_filter, filter_text):
+    def poll_update_cached_data(load_poll, active_tab, market_filter,
+                                type_filter, filter_text):
         """每 3 秒的自动加载轮询只更新 DataTable 的 data 属性，不重建组件。
 
         这样 Dash 会保留 cached-data-table 的 page_current（翻页位置）与 selected_rows，
@@ -93,41 +185,64 @@ def register_data_cache_callbacks(app):
         """
         if active_tab != "tab-cached":
             return no_update
-        svc = get_data_service()
-        rows = svc.get_cached_table(
-            market_filter=market_filter or "all",
-            text_filter=filter_text or "",
-        )
-        return rows or []
+        return _catalog_rows(market_filter, type_filter, filter_text) or []
+
+    @app.callback(
+        Output("cache-delete-modal", "is_open"),
+        Output("cache-delete-modal-body", "children"),
+        Input("cache-delete-btn", "n_clicks"),
+        Input("cache-delete-cancel-btn", "n_clicks"),
+        State("cached-data-table", "selected_rows"),
+        State("cached-data-table", "data"),
+        State("cache-delete-type", "value"),
+        prevent_initial_call=True,
+    )
+    def toggle_delete_modal(open_clicks, cancel_clicks, selected_rows,
+                            table_data, delete_type="all"):
+        """「删除选中」→ 弹二次确认；「取消」→ 关闭（FR-8.3 / U-4）。"""
+        from dash import ctx
+        trigger = getattr(ctx, "triggered_id", None)
+        if trigger == "cache-delete-cancel-btn":
+            return False, no_update
+        if not selected_rows or not table_data:
+            return False, no_update
+        tickers = [table_data[idx]["ticker"] for idx in selected_rows]
+        return True, _delete_confirm_text(tickers, delete_type or "all")
 
 
-def _build_cached_table():
-    svc = get_data_service()
-    rows = svc.get_cached_table()
+_TYPE_NAMES = {
+    "daily": "日线", "minute": "分钟线", "realtime": "实时快照",
+    "adj": "复权因子", "financials": "财务数据",
+}
+
+
+def _delete_confirm_text(tickers: list[str], delete_type: str):
+    """确认文案明示删除的数据类型与影响范围（FR-8.3）。"""
+    shown = "、".join(tickers[:5]) + ("等" if len(tickers) > 5 else "")
+    if delete_type == "all":
+        scope = html.P([
+            "将删除以上标的的",
+            html.Strong("全部缓存数据（日线/分钟/实时/复权/财务）"),
+            "并移出缓存目录，操作不可恢复。",
+        ])
+    else:
+        tname = _TYPE_NAMES.get(delete_type, delete_type)
+        scope = html.P([
+            "将仅删除以上标的的",
+            html.Strong(f"【{tname}】"),
+            f"数据；其他类型（如{'日线' if delete_type != 'daily' else '分钟线'}等）不受影响。",
+        ])
+    return html.Div([
+        html.P(f"已选中 {len(tickers)} 个标的：{shown}"),
+        scope,
+    ])
+
+
+def _build_cached_table(market_filter="all", type_filter=None, filter_text=""):
+    rows = _catalog_rows(market_filter, type_filter, filter_text)
     if not rows:
         return _empty_cached_table()
-
-    columns = [
-        {"name": "代码", "id": "ticker"},
-        {"name": "名称", "id": "name"},
-        {"name": "市场", "id": "market"},
-        {"name": "数据条数", "id": "records"},
-        {"name": "起始日期", "id": "start_date"},
-        {"name": "最新日期", "id": "end_date"},
-    ]
-    return dash_table.DataTable(
-        id="cached-data-table",
-        columns=columns,
-        data=rows,
-        row_selectable="multi",
-        page_size=10,
-        style_table={"overflowX": "auto"},
-        style_cell={"padding": "8px", "fontSize": "13px"},
-        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
-        style_data_conditional=[
-            {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
-        ],
-    )
+    return _make_table(rows)
 
 
 def _empty_cached_table():

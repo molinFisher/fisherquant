@@ -34,6 +34,8 @@ class DataCenterService:
         self._db = db
         self._limiter = limiter
         self._legacy_search: bool | None = None
+        from .cache_catalog_service import CacheCatalogService
+        self._catalog = CacheCatalogService(db)
 
     # ------------------------------------------------------------------ #
     # R-50 回滚开关：读取 configs/system.yaml 的 search.legacy（缓存一次）
@@ -328,9 +330,76 @@ class DataCenterService:
 
         return results[:20]
 
+    @staticmethod
+    def _bounds(rows, idx):
+        """取第 idx 列（日期/时间）的 min/max，用于 catalog 边界。"""
+        vals = [r[idx] for r in rows]
+        return min(vals), max(vals)
+
+    @staticmethod
+    def _report_type(report_date: str) -> str:
+        """由报告期 YYYY-MM-DD 推断报告类型（用于 financials.report_type）。"""
+        md = (report_date or "")[:10]
+        if len(md) >= 10:
+            mm = md[5:7]
+            if mm == "03":
+                return "一季报"
+            if mm == "06":
+                return "中报"
+            if mm == "09":
+                return "三季报"
+            if mm == "12":
+                return "年报"
+        return "unknown"
+
+    @staticmethod
+    def _convert_financials(ticker: str, df) -> tuple[list[list], str | None]:
+        """将 stock_financial_abstract 的宽表归一化为 v5 financials 行
+        (ticker, report_date, report_type, indicator, value, unit)。
+        返回 (rows, 最新报告期)；解析不到则返回 ([], None)。
+        """
+        import math
+        try:
+            cols = list(df.columns)
+        except Exception:
+            return [], None
+        date_col = None
+        for c in cols:
+            if "期" in str(c) or "日期" in str(c):
+                date_col = c
+                break
+        if date_col is None and cols:
+            date_col = cols[0]
+        if date_col is None:
+            return [], None
+        indicator_cols = [c for c in cols if c != date_col]
+        rows: list[list] = []
+        fin_end: str | None = None
+        for _, r in df.iterrows():
+            try:
+                rd = str(r[date_col])[:10]
+            except Exception:
+                continue
+            if not rd or len(rd) < 10:
+                continue
+            rt = DataCenterService._report_type(rd)
+            if fin_end is None or rd > fin_end:
+                fin_end = rd
+            for ic in indicator_cols:
+                val = r[ic]
+                if val is None:
+                    continue
+                try:
+                    if isinstance(val, float) and math.isnan(val):
+                        continue
+                    v = float(val)
+                except (ValueError, TypeError):
+                    continue
+                rows.append([ticker, rd, rt, str(ic), v, None])
+        return rows, fin_end
+
     def fetch_bars(self, symbols: list[str], start: str, end: str,
                    data_type: str = "daily", period: str = "") -> dict:
-        import json
         results = {}
         # akshare 东财系接口只接受 YYYYMMDD；日期选择器给出 ISO（带横线），统一转换
         start_compact = (start or "").replace("-", "")
@@ -339,6 +408,7 @@ class DataCenterService:
             try:
                 is_hk = sym.upper().endswith(".HK")
                 code = sym.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
+                market = "hk_connect" if is_hk else "a_share"
                 if data_type == "daily":
                     if is_hk:
                         # 港股：stock_hk_daily 返回全量历史，按区间过滤
@@ -360,9 +430,14 @@ class DataCenterService:
                         if not rows:
                             results[sym] = {"status": "failed", "error": "该区间无数据"}
                             continue
-                        self._db.execute("DELETE FROM bars_daily WHERE ticker=?", [sym])
-                        self._db.execute_many(
-                            "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                        s, e = self._bounds(rows, 1)
+                        # 同一事务：删旧 + 写新 + 更新 catalog 覆盖度（FR-1.2 / FR-1.6）
+                        with self._db.transaction() as conn:
+                            conn.execute("DELETE FROM bars_daily WHERE ticker=?", [sym])
+                            conn.executemany(
+                                "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                            self._catalog.record_coverage(
+                                conn, sym, market, data_type="daily", start=s, end=e)
                         results[sym] = {"status": "ok", "count": len(rows)}
                         continue
                     df = _retry_fetch(lambda: ak.stock_zh_a_hist(
@@ -375,9 +450,13 @@ class DataCenterService:
                             rows.append([ticker, str(r["日期"])[:10], float(r["开盘"]),
                                          float(r["最高"]), float(r["最低"]), float(r["收盘"]),
                                          int(r["成交量"]), float(r["成交额"]), "a_share", 1.0])
-                        self._db.execute("DELETE FROM bars_daily WHERE ticker=?", [ticker])
-                        self._db.execute_many(
-                            "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                        s, e = self._bounds(rows, 1)
+                        with self._db.transaction() as conn:
+                            conn.execute("DELETE FROM bars_daily WHERE ticker=?", [ticker])
+                            conn.executemany(
+                                "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                            self._catalog.record_coverage(
+                                conn, ticker, "a_share", data_type="daily", start=s, end=e)
                         results[sym] = {"status": "ok", "count": len(rows)}
                     else:
                         results[sym] = {"status": "failed", "error": "该区间无数据"}
@@ -395,28 +474,43 @@ class DataCenterService:
                         for _, r in df.iterrows():
                             rows.append([ticker, str(r["时间"]), float(r["开盘"]),
                                          float(r["最高"]), float(r["最低"]), float(r["收盘"]),
-                                         int(r["成交量"]), float(r["成交额"])])
-                        self._db.execute("DELETE FROM bars_minute WHERE ticker=?", [ticker])
-                        self._db.execute_many(
-                            "INSERT INTO bars_minute VALUES (?,?,?,?,?,?,?,?)", rows)
+                                         int(r["成交量"]), float(r["成交额"]),
+                                         "a_share", period or "5"])
+                        s, e = self._bounds(rows, 1)
+                        # v5 bars_minute 含 market/period 列，显式列名写入（避免列数漂移）
+                        with self._db.transaction() as conn:
+                            conn.execute("DELETE FROM bars_minute WHERE ticker=?", [ticker])
+                            conn.executemany(
+                                "INSERT INTO bars_minute "
+                                "(ticker, bar_time, open, high, low, close, volume, amount, market, period) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                            self._catalog.record_coverage(
+                                conn, ticker, "a_share", data_type="minute", start=s, end=e)
                         results[sym] = {"status": "ok", "count": len(rows)}
                     else:
                         results[sym] = {"status": "failed", "error": "该区间无数据"}
                 elif data_type == "financials":
+                    # v5 financials 表：(ticker, report_date, report_type, indicator, value, unit)
                     df = _retry_fetch(lambda: ak.stock_financial_abstract(symbol=code))
                     if df is not None and not df.empty:
-                        self._db.execute("CREATE TABLE IF NOT EXISTS financials "
-                                         "(ticker VARCHAR, report_date VARCHAR, data JSON)")
-                        self._db.execute("DELETE FROM financials WHERE ticker=?", [code])
-                        for _, r in df.iterrows():
-                            self._db.execute("INSERT INTO financials VALUES (?,?,?)",
-                                             [code, str(r.iloc[0])[:10],
-                                              json.dumps(r.to_dict(), ensure_ascii=False)])
+                        rows, fin_end = self._convert_financials(sym, df)
+                        if not rows:
+                            results[sym] = {"status": "failed", "error": "无财务数据"}
+                            continue
+                        with self._db.transaction() as conn:
+                            conn.execute("DELETE FROM financials WHERE ticker=?", [sym])
+                            conn.executemany(
+                                "INSERT INTO financials "
+                                "(ticker, report_date, report_type, indicator, value, unit) "
+                                "VALUES (?,?,?,?,?,?)", rows)
+                            self._catalog.record_coverage(
+                                conn, sym, market, data_type="financials",
+                                fin_report_end=fin_end)
                         results[sym] = {"status": "ok", "financials": True}
                     else:
                         results[sym] = {"status": "failed", "error": "无财务数据"}
-            except Exception as e:
-                results[sym] = {"status": "failed", "error": str(e)[:80]}
+            except Exception as ex:
+                results[sym] = {"status": "failed", "error": str(ex)[:80]}
         return results
 
     def get_cache_stats(self) -> dict:
@@ -472,15 +566,47 @@ class DataCenterService:
             logger.error("get_cached_table failed: %s", e)
             return []
 
+    # data_type -> 物理表删除语句（按类型删除，FR-1.5）
+    _TYPE_DELETE_SQL = {
+        "daily": ["DELETE FROM bars_daily WHERE ticker=?"],
+        "minute": ["DELETE FROM bars_minute WHERE ticker=?"],
+        "realtime": ["DELETE FROM snapshots WHERE ticker=?"],
+        "adj": ["DELETE FROM adj_factors WHERE ticker=?"],
+        "financials": ["DELETE FROM financials WHERE ticker=?"],
+    }
+
     def delete_symbols(self, tickers: list[str]) -> int:
+        """整行删除：清除全部 5 类物理数据 + cache_catalog 目录行（同事务，验收 11）。"""
         count = 0
         for t in tickers:
             try:
-                self._db.execute("DELETE FROM bars_daily WHERE ticker=?", [t])
-                self._db.execute("DELETE FROM bars_minute WHERE ticker=?", [t])
+                with self._db.transaction() as conn:
+                    for sqls in self._TYPE_DELETE_SQL.values():
+                        for sql in sqls:
+                            conn.execute(sql, [t])
+                    conn.execute("DELETE FROM cache_catalog WHERE ticker=?", [t])
                 count += 1
             except Exception as e:
                 logger.error("Failed to delete %s: %s", t, e)
+        return count
+
+    def delete_symbols_by_type(self, tickers: list[str], data_type: str) -> int:
+        """按类型删除：仅删该类物理数据，同事务将 has_<type> 置 FALSE、边界置 NULL；
+        其他类型数据与覆盖标记不受影响（FR-1.5 / 验收 11）。"""
+        sqls = self._TYPE_DELETE_SQL.get(data_type)
+        if not sqls:
+            logger.error("delete_symbols_by_type: 未知数据类型 %s", data_type)
+            return 0
+        count = 0
+        for t in tickers:
+            try:
+                with self._db.transaction() as conn:
+                    for sql in sqls:
+                        conn.execute(sql, [t])
+                    self._catalog.clear_coverage(conn, t, data_type)
+                count += 1
+            except Exception as e:
+                logger.error("Failed to delete %s type=%s: %s", t, data_type, e)
         return count
 
     def estimate_export(self, symbols: list[str], start: str, end: str) -> dict:

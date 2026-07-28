@@ -204,6 +204,67 @@ class TestFetchBars:
         assert results["600519.SH"]["status"] == "failed"
         assert "无数据" in results["600519.SH"]["error"]
 
+    def test_fetch_daily_records_catalog_coverage(self, data_service, mock_akshare):
+        """FR-1.6：日线写库成功后 cache_catalog.has_daily=TRUE 且边界正确。"""
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
+        df = data_service._db.query_df(
+            "SELECT has_daily, daily_start, daily_end FROM cache_catalog WHERE ticker='600519.SH'")
+        assert len(df) == 1
+        assert df["has_daily"][0] is True
+        assert str(df["daily_start"][0]) == "2024-01-02"
+        assert str(df["daily_end"][0]) == "2024-01-03"
+
+    def test_fetch_minute_records_catalog_coverage(self, data_service, monkeypatch):
+        """FR-1.6：分钟线写库成功后 cache_catalog.has_minute=TRUE。"""
+        import akshare as ak
+        minute_bars = [
+            {"时间": "2024-01-02 09:31:00", "开盘": 100.0, "最高": 101.0,
+             "最低": 99.0, "收盘": 100.5, "成交量": 1000, "成交额": 100500.0},
+            {"时间": "2024-01-02 09:32:00", "开盘": 100.5, "最高": 102.0,
+             "最低": 100.0, "收盘": 101.0, "成交量": 1200, "成交额": 121200.0},
+        ]
+
+        def mock_min_em(symbol=None, period="1", start_date="", end_date="", adjust=""):
+            from tests.conftest import MockAKShareDF
+            return MockAKShareDF(minute_bars)
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", mock_min_em, raising=False)
+
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31", data_type="minute")
+        df = data_service._db.query_df(
+            "SELECT has_minute FROM cache_catalog WHERE ticker='600519.SH'")
+        assert df["has_minute"][0] is True
+
+    def test_fetch_idempotent_boundary_no_shrink(self, data_service, mock_akshare):
+        """验收 12：重复获取同区间，bars_daily 行数与 catalog 边界均不漂移。"""
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
+        n1 = data_service._db.query_df("SELECT COUNT(*) c FROM bars_daily WHERE ticker='600519.SH'")["c"][0]
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
+        n2 = data_service._db.query_df("SELECT COUNT(*) c FROM bars_daily WHERE ticker='600519.SH'")["c"][0]
+        assert n1 == n2
+        df = data_service._db.query_df("SELECT daily_start, daily_end FROM cache_catalog WHERE ticker='600519.SH'")
+        assert str(df["daily_start"][0]) == "2024-01-02"
+        assert str(df["daily_end"][0]) == "2024-01-03"
+
+    def test_fetch_failure_rolls_back_catalog(self, data_service, mock_akshare, monkeypatch):
+        """验收 13：写库与 catalog 覆盖度同事务，数据写库抛异常则 catalog 也回滚。"""
+        # 正常返回数据，但在事务提交前制造异常：让 record_coverage 抛错。
+        original_record = data_service._catalog.record_coverage
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated catalog failure")
+        data_service._catalog.record_coverage = boom
+        try:
+            res = data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
+        finally:
+            data_service._catalog.record_coverage = original_record
+        assert res["600519.SH"]["status"] == "failed"
+        # 数据行应回滚（事务整体回滚）
+        n = data_service._db.query_df("SELECT COUNT(*) c FROM bars_daily WHERE ticker='600519.SH'")["c"][0]
+        assert n == 0
+        # catalog 也无该行
+        nc = data_service._db.query_df("SELECT COUNT(*) c FROM cache_catalog WHERE ticker='600519.SH'")["c"][0]
+        assert nc == 0
+
 
 class TestCacheStats:
     def test_empty_db_returns_zeros(self, data_service):
@@ -307,3 +368,49 @@ class TestResolveTickerIntegration:
         assert resolve_ticker("600519") == "600519.SH"
         assert resolve_ticker("000001") == "000001.SZ"
         assert resolve_ticker("00700", "hk_connect") == "00700.HK"
+
+
+class TestDeleteByType:
+    """FR-1.5 / 验收 11：按类型删除仅删该类数据并联动 has_*；整行删除清目录行。"""
+
+    def _seed(self, data_service, mock_akshare):
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31",
+                                data_type="minute", period="5")
+
+    def test_delete_minute_only(self, data_service, mock_akshare):
+        self._seed(data_service, mock_akshare)
+        n = data_service.delete_symbols_by_type(["600519.SH"], "minute")
+        assert n == 1
+        db = data_service._db
+        assert db.query_df(
+            "SELECT COUNT(*) c FROM bars_minute WHERE ticker='600519.SH'"
+        ).to_dicts()[0]["c"] == 0
+        # 日线不受影响
+        assert db.query_df(
+            "SELECT COUNT(*) c FROM bars_daily WHERE ticker='600519.SH'"
+        ).to_dicts()[0]["c"] > 0
+        cat = db.query_df(
+            "SELECT has_daily, has_minute, minute_start, minute_end "
+            "FROM cache_catalog WHERE ticker='600519.SH'"
+        ).to_dicts()[0]
+        assert cat["has_daily"] is True
+        assert cat["has_minute"] is False
+        assert cat["minute_start"] is None and cat["minute_end"] is None
+
+    def test_delete_full_row_clears_catalog(self, data_service, mock_akshare):
+        self._seed(data_service, mock_akshare)
+        n = data_service.delete_symbols(["600519.SH"])
+        assert n == 1
+        db = data_service._db
+        for table in ("bars_daily", "bars_minute", "cache_catalog"):
+            assert db.query_df(
+                f"SELECT COUNT(*) c FROM {table} WHERE ticker='600519.SH'"
+            ).to_dicts()[0]["c"] == 0
+
+    def test_delete_unknown_type_noop(self, data_service, mock_akshare):
+        self._seed(data_service, mock_akshare)
+        assert data_service.delete_symbols_by_type(["600519.SH"], "nope") == 0
+        assert data_service._db.query_df(
+            "SELECT COUNT(*) c FROM bars_daily WHERE ticker='600519.SH'"
+        ).to_dicts()[0]["c"] > 0

@@ -69,6 +69,15 @@ def create_sidebar():
             )
         )
 
+    # 首页：常驻顶部（不在折叠分组内），与现有 nav-item 样式/高亮一致
+    home_link = dbc.NavLink(
+        [html.Span("🏠", className="me-2"), "首页"],
+        href="/home",
+        id={"type": "nav-item", "index": "home"},
+        className="nav-item",
+        active="exact",
+    )
+
     return html.Div(
         [
             html.Div(
@@ -79,7 +88,10 @@ def create_sidebar():
                 className="sidebar-brand",
             ),
             html.Hr(className="border-secondary"),
-            dbc.Nav(nav_groups, vertical=True, pills=True, className="sidebar-nav"),
+            dbc.Nav(
+                [home_link, html.Hr(className="border-secondary")] + nav_groups,
+                vertical=True, pills=True, className="sidebar-nav",
+            ),
             html.Div(
                 [
                     html.Hr(className="border-secondary"),

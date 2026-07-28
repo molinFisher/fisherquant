@@ -26,10 +26,7 @@ def create_data_center_layout():
             ),
             dcc.Store(id="search-results-store"),
             dcc.Store(id="selected-symbols-store", data=[]),
-            dcc.Store(id="fetch-progress-status"),
-            dcc.Store(id="fetch-progress-store"),
             dcc.Store(id="toast-trigger"),
-            dcc.Interval(id="fetch-progress-poll", interval=1000),
             dcc.Interval(id="auto-load-progress-poll", interval=3000),
             html.Div(id="data-center-content"),
         ]
@@ -127,13 +124,6 @@ def _create_query_tab():
                                     # FR-5：按钮不可用时常驻原因提示（DES-4）
                                     html.Div(id="fetch-guard-hint",
                                              className="text-muted small mt-1"),
-                                    dbc.Progress(
-                                        id="fetch-progress-bar",
-                                        value=0,
-                                        label="0%",
-                                        className="mt-2",
-                                        style={"height": "4px"},
-                                    ),
                                     html.Div(id="fetch-status", className="mt-2"),
                                 ]
                             ),
@@ -283,6 +273,20 @@ def _create_cached_tab():
                                 [
                                     dbc.Input(placeholder="筛选标的...", id="cache-filter-input"),
                                     dbc.Button("刷新", id="cache-refresh-btn", color="secondary"),
+                                    # 删除范围：整行（全部类型）或仅某一数据类型（FR-1.5）
+                                    dbc.Select(
+                                        id="cache-delete-type",
+                                        options=[
+                                            {"label": "删除范围：全部类型", "value": "all"},
+                                            {"label": "仅日线", "value": "daily"},
+                                            {"label": "仅分钟线", "value": "minute"},
+                                            {"label": "仅实时快照", "value": "realtime"},
+                                            {"label": "仅复权因子", "value": "adj"},
+                                            {"label": "仅财务数据", "value": "financials"},
+                                        ],
+                                        value="all",
+                                        style={"maxWidth": "180px"},
+                                    ),
                                     dbc.Button("删除选中", id="cache-delete-btn", color="danger"),
                                 ],
                                 className="mb-2",
@@ -292,18 +296,60 @@ def _create_cached_tab():
                     ),
                 ]
             ),
-            dcc.RadioItems(
-                id="cache-market-filter",
-                options=[
-                    {"label": "全部", "value": "all"},
-                    {"label": "A股", "value": "a_share"},
-                    {"label": "港股", "value": "hk_connect"},
+            # U-3：市场与数据类型筛选并排一行（数据类型多选 = AND 语义）
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dcc.RadioItems(
+                            id="cache-market-filter",
+                            options=[
+                                {"label": "全部", "value": "all"},
+                                {"label": "A股", "value": "a_share"},
+                                {"label": "港股", "value": "hk_connect"},
+                            ],
+                            value="all",
+                            inline=True,
+                        ),
+                        width="auto",
+                    ),
+                    dbc.Col(
+                        dcc.Checklist(
+                            id="cache-type-filter",
+                            options=[
+                                {"label": " 日线", "value": "daily"},
+                                {"label": " 分钟", "value": "minute"},
+                                {"label": " 实时", "value": "realtime"},
+                                {"label": " 复权", "value": "adj"},
+                                {"label": " 财务", "value": "financials"},
+                            ],
+                            value=[],
+                            inline=True,
+                            inputStyle={"marginLeft": "12px"},
+                        ),
+                        width="auto",
+                    ),
                 ],
-                value="all",
-                inline=True,
-                className="mb-2",
+                className="mb-2 align-items-center",
             ),
             html.Div(id="cached-table-container"),
+            # 删除二次确认 Modal（FR-8.3 / U-4：危险操作必须确认）
+            dbc.Modal(
+                [
+                    dbc.ModalHeader(dbc.ModalTitle("确认删除缓存数据")),
+                    dbc.ModalBody(id="cache-delete-modal-body"),
+                    dbc.ModalFooter(
+                        [
+                            dbc.Button("取消", id="cache-delete-cancel-btn",
+                                       color="secondary", outline=True),
+                            dbc.Button("确认删除", id="cache-delete-confirm-btn",
+                                       color="danger"),
+                        ]
+                    ),
+                ],
+                id="cache-delete-modal",
+                is_open=False,
+                backdrop="static",
+            ),
         ]
     )
 
@@ -432,20 +478,6 @@ def register_data_center_callbacks(app):
         if force_full:
             return "清空并全量重下", "danger"
         return "确认重新加载", "primary"
-
-    @app.callback(
-        Output("fetch-progress-bar", "value"),
-        Output("fetch-progress-bar", "label"),
-        Input("fetch-progress-poll", "n_intervals"),
-        State("fetch-progress-status", "data"),
-    )
-    def update_fetch_progress(n, data):
-        if not data:
-            return 0, "0%"
-        current = data.get("current", 0)
-        total = data.get("total", 1)
-        pct = int(current * 100 / max(total, 1))
-        return pct, f"{current}/{total} ({pct}%)"
 
     @app.callback(
         Output("auto-load-reload-modal", "is_open"),

@@ -12,6 +12,7 @@ from ...store.engine import DuckDBManager
 from ...market.rate_limiter import RateLimiter
 from .models import resolve_ticker, AUTO_LOAD_CFG
 from .symbol_search import to_pinyin
+from .cache_catalog_service import CacheCatalogService
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,8 @@ class AutoLoadService:
         # P1 失败重试（FR-4.2）：次数与退避可注入（测试用 monkeypatch）
         self._retry_max_attempts = int(AUTO_LOAD_CFG.get("retry_max_attempts", 4))
         self._retry_backoff = list(AUTO_LOAD_CFG.get("retry_backoff", [5, 15, 60]))
+        # 缓存目录中枢：自动加载每类写库后同事务更新覆盖度（FR-1.2 / FR-7.5）
+        self._catalog = CacheCatalogService(db)
         self._ensure_status_table()
         # R-01：清理旧版基于位置索引的游标 key（current/skipped/total），由账本 ticker 取代
         try:
@@ -465,12 +468,17 @@ class AutoLoadService:
                     "UPDATE symbol_load_state SET status=? WHERE ticker=?",
                     [STATUS_LOADING, ticker])
                 bars = self._download(ticker, market, plan, gap_start)
-                with self._db.transaction():
+                with self._db.transaction() as conn:
                     if bars:
                         self._db.execute_many(
                             "INSERT OR REPLACE INTO bars_daily "
                             "(ticker,trade_date,open,high,low,close,volume,amount,market,adj_factor) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?)", bars)
+                        # 同事务更新 cache_catalog 日线覆盖度（FR-1.2 / FR-1.6）
+                        s = min(b[1] for b in bars)
+                        e = max(b[1] for b in bars)
+                        self._catalog.record_coverage(
+                            conn, ticker, market, data_type="daily", start=s, end=e)
                     self._db.execute(
                         "UPDATE symbol_load_state SET status=?, last_error=NULL, "
                         "updated_at=CURRENT_TIMESTAMP WHERE ticker=?",
@@ -535,6 +543,95 @@ class AutoLoadService:
         return bars
 
     # ------------------------------------------------------------------ #
+    # 分钟线入库 + 窗口缓存策略（PRD FR-7.2 / 验收#9，Task #4）
+    # ------------------------------------------------------------------ #
+    def _download_minute(self, ticker: str, market: str, start: str,
+                         end: str, period: str = "5") -> list[list]:
+        """下载分钟线（仅 A 股；港股分钟线暂不支持，返回空）。"""
+        if market == MARKET_HK:
+            return []
+        self._limiter.acquire()
+        code = ticker.replace(".SH", "").replace(".SZ", "")
+        df = ak.stock_zh_a_hist_min_em(
+            symbol=code, period=period or "5",
+            start_date=start.replace("-", ""), end_date=end.replace("-", ""))
+        if df is None or (hasattr(df, "empty") and df.empty):
+            return []
+        rows = []
+        for _, r in df.iterrows():
+            rows.append([ticker, str(r["时间"]), float(r["开盘"]), float(r["最高"]),
+                         float(r["最低"]), float(r["收盘"]), int(r["成交量"]),
+                         float(r["成交额"]), market, period or "5"])
+        return rows
+
+    def fetch_and_store_minute(self, ticker: str, market: str, start: str, end: str,
+                               period: str = "5", now=None, window_days: int = 60) -> int:
+        """下载并入库分钟线，同事务更新 catalog 覆盖度，随后惰性修剪窗口外旧数据。"""
+        rows = self._download_minute(ticker, market, start, end, period)
+        if not rows:
+            return 0
+        with self._db.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO bars_minute "
+                "(ticker, bar_time, open, high, low, close, volume, amount, market, period) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+            s = min(r[1] for r in rows)
+            e = max(r[1] for r in rows)
+            self._catalog.record_coverage(
+                conn, ticker, market, data_type="minute", start=s, end=e)
+        # 窗口外旧分钟线惰性清理，并把 minute_start 前移（验收#9）
+        self.prune_minute_window(ticker, now=now, window_days=window_days)
+        return len(rows)
+
+    def prune_minute_window(self, ticker: str, now=None, window_days: int = 60) -> int:
+        """按可注入时钟 now 与窗口 window_days 清理窗口外旧分钟线（Task #4）。
+
+        删除 bar_time < (now - window) 的分钟行，并将 cache_catalog.minute_start
+        前移至剩余数据最早点（无剩余则置 NULL）。返回删除行数。
+        """
+        if now is None:
+            now = datetime.now()
+        cutoff = now - timedelta(days=window_days)
+        deleted = 0
+        try:
+            with self._db.transaction() as conn:
+                res = conn.execute(
+                    "SELECT COUNT(*) FROM bars_minute WHERE ticker=? AND bar_time < ?",
+                    [ticker, cutoff])
+                deleted = int(res.fetchone()[0] or 0)
+                if deleted > 0:
+                    conn.execute(
+                        "DELETE FROM bars_minute WHERE ticker=? AND bar_time < ?",
+                        [ticker, cutoff])
+                # 重新计算 minute_start（剩余数据最早点）
+                row = conn.execute(
+                    "SELECT MIN(bar_time) FROM bars_minute WHERE ticker=?", [ticker]).fetchone()
+                new_start = row[0] if row and row[0] is not None else None
+                conn.execute(
+                    "UPDATE cache_catalog SET minute_start=?, last_update=CURRENT_TIMESTAMP "
+                    "WHERE ticker=?", [new_start, ticker])
+        except Exception as e:
+            logger.warning("prune_minute_window failed %s: %s", ticker, e)
+        return deleted
+
+    # ------------------------------------------------------------------ #
+    # 实时快照入库（PRD FR-6 / 验收#15，Task #5）
+    # ------------------------------------------------------------------ #
+    def record_realtime_snapshot(self, ticker: str, market: str, last_price: float,
+                                 pre_close=None, change_pct=None, ts=None) -> None:
+        """幂等 upsert 实时快照到 snapshots 并同事务更新 catalog.realtime_ts（FR-1.2）。"""
+        if ts is None:
+            ts = datetime.now()
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO snapshots "
+                "(ticker, ts, last_price, pre_close, market, change_pct) "
+                "VALUES (?,?,?,?,?,?)",
+                [ticker, ts, last_price, pre_close, market, change_pct])
+            self._catalog.record_coverage(
+                conn, ticker, market, data_type="realtime", realtime_ts=ts)
+
+    # ------------------------------------------------------------------ #
     # 对外便捷入口（供回调调用）
     # ------------------------------------------------------------------ #
     def start(self) -> dict:
@@ -564,11 +661,15 @@ class AutoLoadService:
                     continue
                 bars = self._download(t, market, PLAN_GAP, last_date + timedelta(days=1))
                 if bars:
-                    with self._db.transaction():
+                    with self._db.transaction() as conn:
                         self._db.execute_many(
                             "INSERT OR REPLACE INTO bars_daily "
                             "(ticker,trade_date,open,high,low,close,volume,amount,market,adj_factor) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?)", bars)
+                        s = min(b[1] for b in bars)
+                        e = max(b[1] for b in bars)
+                        self._catalog.record_coverage(
+                            conn, t, market, data_type="daily", start=s, end=e)
                 processed += 1
             except Exception as e:
                 logger.warning("Incremental update failed %s: %s", t, e)

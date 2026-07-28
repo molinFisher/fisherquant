@@ -24,8 +24,8 @@ PAGE_MAP = {
 }
 
 PAGE_TO_NAV_ID = {
-    "/": "data-center",
-    "/home": "data-center",
+    "/": "home",
+    "/home": "home",
     "/data-center": "data-center",
     "/market-watch": "market-watch",
     "/strategy-center": "strategy-center",

@@ -66,6 +66,9 @@ class FakeService:
     def delete_symbols(self, tickers):
         self.calls.append(("delete_symbols", list(tickers)))
 
+    def delete_symbols_by_type(self, tickers, data_type):
+        self.calls.append(("delete_symbols_by_type", list(tickers), data_type))
+
     @property
     def _db(self):
         return self.data.get("_db")
@@ -287,7 +290,8 @@ class TestDataCallbacks:
         final = cb(1, pool, "2024-01-01", "2024-02-01", "daily", "")
         assert "成功 1" in final[0]
         assert "✓ 600519.SH: 5条记录" in "".join(_text(final[1]))
-        assert final[2]["current"] == final[2]["total"] == 1
+        # 进度条已按产品要求移除（回调仅输出 fetch-status / fetch-results 两项）
+        assert len(final) == 2
         assert ("fetch_bars", ["600519.SH"]) in fake.calls
 
     def test_fetch_data_financials_skips_hk(self, monkeypatch):
@@ -323,6 +327,30 @@ class TestDataCallbacks:
 # =========================================================================== #
 # 2) data_cache_callbacks
 # =========================================================================== #
+class FakeCatalogService:
+    """cache_catalog 目录服务替身（V1.4 目录页数据源切换后使用）。"""
+
+    def __init__(self, summary=None):
+        self.summary = summary or []
+        self.calls = []
+
+    def get_cache_summary(self, market=None, data_types=None, text=None):
+        self.calls.append(("get_cache_summary", market, list(data_types or []), text))
+        return self.summary
+
+
+def _summary_row(ticker="600519.SH", **kw):
+    row = {
+        "ticker": ticker, "name": "贵州茅台", "market": "a_share",
+        "has_daily": True, "has_minute": False, "has_realtime": False,
+        "has_adj": False, "has_financials": False,
+        "daily_start": "2024-01-01", "daily_end": "2024-02-01",
+        "realtime_ts": None, "daily_rows": 10, "minute_rows": 0,
+    }
+    row.update(kw)
+    return row
+
+
 class TestDataCacheCallbacks:
     def test_registers(self):
         with capture_dash_callbacks() as app:
@@ -335,19 +363,24 @@ class TestDataCacheCallbacks:
         assert isinstance(el, html.Div)
         assert "暂无缓存数据" in "".join(_text(el))
 
+    def test_coverage_markdown_badges(self):
+        """U-1：覆盖度徽标 ✓绿 ✗灰，hover 出类型名 + 边界日期。"""
+        md = data_cache_callbacks._coverage_markdown(_summary_row())
+        assert "日✓" in md and "分✗" in md and "实✗" in md and "复✗" in md
+        assert "#28a745" in md          # 有数据 → 绿
+        assert "2024-01-01 ~ 2024-02-01" in md  # hover 边界
+
     def test_force_refresh_cached_not_active(self, monkeypatch):
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
-                            lambda: FakeService())
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService())
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 0)
         assert cb(1, "tab-other") is no_update
 
     def test_force_refresh_cached_with_rows(self, monkeypatch):
-        rows = [{"ticker": "000001", "market": "a_share", "records": 5,
-                 "start_date": "2024-01-01", "end_date": "2024-02-01"}]
-        fake = FakeService(cached_table=rows)
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
+        fake = FakeCatalogService(summary=[_summary_row(ticker="000001.SZ")])
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
                             lambda: fake)
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
@@ -355,36 +388,51 @@ class TestDataCacheCallbacks:
         res = cb(1, "tab-cached")
         assert isinstance(res, dash_table.DataTable)
         assert res.id == "cached-data-table"
-        assert res.data == rows
+        assert res.data[0]["ticker"] == "000001.SZ"
+        assert res.data[0]["daily_rows"] == 10
 
     def test_render_cached_table_not_active(self, monkeypatch):
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
-                            lambda: FakeService())
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService())
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 1)
-        assert cb("tab-live", "all", "", 0, 0) is no_update
+        assert cb("tab-live", "all", [], "", 0, 0) is no_update
 
     def test_render_cached_table_with_rows(self, monkeypatch):
-        rows = [{"ticker": "600519", "market": "a_share", "records": 10,
-                 "start_date": "2024-01-01", "end_date": "2024-02-01"}]
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
-                            lambda: FakeService(cached_table=rows))
+        fake = FakeCatalogService(summary=[_summary_row()])
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: fake)
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 1)
-        res = cb("tab-cached", "all", "", 1, 1)
+        res = cb("tab-cached", "all", [], "", 1, 1)
         assert isinstance(res, dash_table.DataTable)
         assert res.id == "cached-data-table"
-        assert res.data == rows
+        assert res.data[0]["ticker"] == "600519.SH"
+        # 覆盖度列为 markdown 徽标
+        cov_col = [c for c in res.columns if c["id"] == "coverage"]
+        assert cov_col and cov_col[0].get("presentation") == "markdown"
 
-    def test_render_cached_table_empty(self, monkeypatch):
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
-                            lambda: FakeService(cached_table=[]))
+    def test_render_cached_table_type_filter_passthrough(self, monkeypatch):
+        """FR-8.2：数据类型多选透传给 get_cache_summary（AND 语义在服务层）。"""
+        fake = FakeCatalogService(summary=[_summary_row()])
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: fake)
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 1)
-        res = cb("tab-cached", "all", "", 1, 1)
+        cb("tab-cached", "a_share", ["daily", "minute"], "茅台", 1, 1)
+        assert fake.calls[-1] == ("get_cache_summary", "a_share",
+                                  ["daily", "minute"], "茅台")
+
+    def test_render_cached_table_empty(self, monkeypatch):
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService(summary=[]))
+        with capture_dash_callbacks() as app:
+            data_cache_callbacks.register_data_cache_callbacks(app)
+            cb = _nth(app, 1)
+        res = cb("tab-cached", "all", [], "", 1, 1)
         assert isinstance(res, html.Div)
         assert "暂无缓存数据" in "".join(_text(res))
 
@@ -397,46 +445,71 @@ class TestDataCacheCallbacks:
           - 数据变化时仍返回最新行（保证自动加载新增标的会刷新出来）；
           - 不在缓存 tab 时返回 no_update，避免无谓更新。
         """
-        rows = [
-            {"ticker": "600519", "market": "a_share", "records": 10,
-             "start_date": "2024-01-01", "end_date": "2024-02-01"},
-            {"ticker": "000001", "market": "a_share", "records": 8,
-             "start_date": "2024-01-01", "end_date": "2024-02-01"},
-        ]
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
-                            lambda: FakeService(cached_table=rows))
+        summary = [_summary_row(ticker="600519.SH"),
+                   _summary_row(ticker="000001.SZ", daily_rows=8)]
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService(summary=summary))
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             # 轮询回调按注册顺序是第 4 个（force_refresh / render / delete / poll）
             poll = _nth(app, 3)
         # 不在缓存 tab → no_update
-        assert poll(0, "tab-query", "all", "") is no_update
+        assert poll(0, "tab-query", "all", [], "") is no_update
         # 在缓存 tab → 返回行数据列表（不是 DataTable / html.Div）
-        out = poll(0, "tab-cached", "all", "")
+        out = poll(0, "tab-cached", "all", [], "")
         assert isinstance(out, list)
-        assert out == rows
+        assert [r["ticker"] for r in out] == ["600519.SH", "000001.SZ"]
         # 数据变化（自动加载新增标的）→ 返回最新行，仍是 list（仍不重建组件）
-        changed = rows + [{"ticker": "300750", "market": "a_share", "records": 3,
-                           "start_date": "2024-03-01", "end_date": "2024-04-01"}]
-        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
-                            lambda: FakeService(cached_table=changed))
-        out2 = poll(1, "tab-cached", "all", "")
+        changed = summary + [_summary_row(ticker="300750.SZ", daily_rows=3)]
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService(summary=changed))
+        out2 = poll(1, "tab-cached", "all", [], "")
         assert isinstance(out2, list)
-        assert any(r["ticker"] == "300750" for r in out2)
+        assert any(r["ticker"] == "300750.SZ" for r in out2)
 
-    def test_delete_selected_rows(self, monkeypatch):
-        rows = [{"ticker": "600519", "market": "a_share", "records": 1,
-                 "start_date": "2024-01-01", "end_date": "2024-02-01"}]
-        fake = FakeService(cached_table=rows)
+    def test_confirm_delete_full_row(self, monkeypatch):
+        """FR-8.3：确认删除（整行）走 delete_symbols 并关闭 Modal。"""
+        fake = FakeService()
         monkeypatch.setattr(data_cache_callbacks, "get_data_service",
                             lambda: fake)
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService(summary=[_summary_row()]))
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
             cb = _nth(app, 2)
-        assert cb(1, None, None) is no_update
-        res = cb(1, [0], [{"ticker": "600519"}, {"ticker": "000001"}])
+        # 未选中 → 不删除
+        out = cb(1, None, None, "all", "all", [], "")
+        assert out[0] is no_update
+        res, is_open = cb(1, [0], [{"ticker": "600519"}, {"ticker": "000001"}],
+                          "all", "all", [], "")
         assert isinstance(res, dash_table.DataTable)
+        assert is_open is False
         assert ("delete_symbols", ["600519"]) in fake.calls
+
+    def test_confirm_delete_by_type(self, monkeypatch):
+        """FR-1.5：按类型删除走 delete_symbols_by_type（服务层联动 has_*）。"""
+        fake = FakeService()
+        monkeypatch.setattr(data_cache_callbacks, "get_data_service",
+                            lambda: fake)
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: FakeCatalogService(summary=[]))
+        with capture_dash_callbacks() as app:
+            data_cache_callbacks.register_data_cache_callbacks(app)
+            cb = _nth(app, 2)
+        cb(1, [0], [{"ticker": "600519.SH"}], "minute", "all", [], "")
+        assert ("delete_symbols_by_type", ["600519.SH"], "minute") in fake.calls
+        assert ("delete_symbols", ["600519.SH"]) not in fake.calls
+
+    def test_delete_modal_confirm_text(self):
+        """U-4：确认文案明示数据类型与影响范围。"""
+        body = data_cache_callbacks._delete_confirm_text(
+            ["600519.SH", "000001.SZ"], "minute")
+        text = "".join(_text(body))
+        assert "2 个标的" in text
+        assert "分钟线" in text and "不受影响" in text
+        body_all = data_cache_callbacks._delete_confirm_text(["600519.SH"], "all")
+        text_all = "".join(_text(body_all))
+        assert "全部缓存数据" in text_all and "不可恢复" in text_all
 
 
 # =========================================================================== #
