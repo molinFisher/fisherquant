@@ -103,3 +103,137 @@ class TestAutoLoadDailyCatalog:
         assert cat["has_daily"][0] is True
         assert str(cat["daily_start"][0]) == "2024-01-03"   # 不缩窄
         assert str(cat["daily_end"][0]) == "2024-01-04"     # 推进到新末端
+
+
+class TestLoadUniverse:
+    """FR-7.1 / FR-7.5：自动加载宇宙收敛为 auto_load_enabled = TRUE。"""
+
+    def test_explicit_universe_priority(self, tmp_path, limiter):
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        svc._catalog.set_auto_load_enabled("600519.SH", True)
+        svc._catalog.set_auto_load_enabled("000001.SZ", True)
+        # 已有显式宇宙 → 直接返回，不走指数回退
+        assert set(svc.load_universe()) == {"600519.SH", "000001.SZ"}
+
+    def test_cold_start_falls_back_to_index(self, tmp_path, limiter, monkeypatch):
+        # 库为空且无 auto_load_enabled → 回退指数成分做初始引导
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        # 指数成分 mock 已在 conftest mock_index_cons 中注册；这里确认回退非空
+        universe = svc.load_universe()
+        assert universe, "冷启动应回退指数成分"
+
+    def test_existing_data_without_universe_is_empty(self, tmp_path, limiter):
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        # 模拟已通过一次性获取写入日线，但 auto_load_enabled 全 FALSE
+        svc._db.execute(
+            "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ["600519.SH", "2024-01-02", 1.0, 1.0, 1.0, 1.0, 100, 100.0, "a_share", 1.0])
+        svc._catalog.set_auto_load_enabled("600519.SH", False)
+        # 已有数据 + 无显式宇宙 → 收敛为空（D-4：避免整库自动加载）
+        assert svc.load_universe() == []
+
+
+class TestAutoLoadMinuteIncremental:
+    """FR-7.2：分钟线每日盘后增量（仅 has_minute & auto_load_enabled 标的补当日）。"""
+
+    def test_incremental_minute_tops_up_today(self, tmp_path, limiter, monkeypatch):
+        """已缓存分钟线 + 纳入自动加载的标的，盘后补齐当日分钟线，has_minute 保持。"""
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        db = svc._db
+        today = datetime.now()
+        today_str = today.strftime("%Y-%m-%d 09:31:00")
+        # 预置一只「已缓存分钟线 + 纳入自动加载」标的
+        db.execute(
+            "INSERT INTO cache_catalog (ticker, market, name, has_minute, auto_load_enabled) "
+            "VALUES ('600519.SH','a_share','茅台',TRUE,TRUE)")
+        minute_rows = [{"时间": today_str, "开盘": 1.0, "最高": 1.0,
+                        "最低": 1.0, "收盘": 1.0, "成交量": 1, "成交额": 1.0}]
+
+        def fake(symbol=None, period="5", start_date="", end_date=""):
+            return MockAKShareDF(minute_rows)
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", fake, raising=False)
+
+        res = svc.incremental_update_minute(now=today)
+        assert res["processed"] == 1
+        n = db.query_df("SELECT COUNT(*) c FROM bars_minute WHERE ticker='600519.SH'")["c"][0]
+        assert n == 1
+        assert db.query_df(
+            "SELECT has_minute FROM cache_catalog WHERE ticker='600519.SH'")["has_minute"][0] is True
+
+    def test_incremental_minute_skips_non_minute(self, tmp_path, limiter, monkeypatch):
+        """仅 has_minute=TRUE 标的纳入分钟增量宇宙（D-4 收敛，不拉全量）；空宇宙 → 不打 fetch。"""
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        db = svc._db
+        # has_minute=FALSE（仅纳入自动加载但没有分钟数据）→ 不应被分钟增量纳入
+        db.execute(
+            "INSERT INTO cache_catalog (ticker, market, name, has_minute, auto_load_enabled) "
+            "VALUES ('600519.SH','a_share','茅台',FALSE,TRUE)")
+        called = []
+
+        def fake(symbol=None, period="5", start_date="", end_date=""):
+            called.append(1)
+            return MockAKShareDF([])
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", fake, raising=False)
+
+        res = svc.incremental_update_minute(now=datetime.now())
+        assert res["processed"] == 0
+        assert res.get("note") == "no_minute_universe"
+        assert called == []  # 空宇宙根本不应打 akshare
+
+    def test_incremental_minute_single_failure_isolated(self, tmp_path, limiter, monkeypatch):
+        """单标的 fetch 失败仅记日志，不影响其余标的（不污染 cache_catalog）。"""
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        db = svc._db
+        today = datetime.now()
+        today_str = today.strftime("%Y-%m-%d 09:31:00")
+        db.execute(
+            "INSERT INTO cache_catalog (ticker, market, name, has_minute, auto_load_enabled) "
+            "VALUES ('600519.SH','a_share','茅台',TRUE,TRUE)")
+        db.execute(
+            "INSERT INTO cache_catalog (ticker, market, name, has_minute, auto_load_enabled) "
+            "VALUES ('000001.SZ','a_share','平安',TRUE,TRUE)")
+
+        def fake(symbol=None, period="5", start_date="", end_date=""):
+            # 第一个标的成功，第二个标的抛错（模拟限频/网络）
+            if symbol == "600519":
+                rows = [{"时间": today_str, "开盘": 1.0, "最高": 1.0,
+                         "最低": 1.0, "收盘": 1.0, "成交量": 1, "成交额": 1.0}]
+                return MockAKShareDF(rows)
+            raise RuntimeError("timeout")
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", fake, raising=False)
+
+        res = svc.incremental_update_minute(now=today)
+        # 成功 1 个（000001.SZ 失败被隔离），processed 仅计成功（与 incremental_update 口径一致）
+        assert res["processed"] == 1
+        # 成功标的写入分钟线 + 覆盖度保持
+        n = db.query_df("SELECT COUNT(*) c FROM bars_minute WHERE ticker='600519.SH'")["c"][0]
+        assert n == 1
+        # 失败标的无分钟线写入（未污染）
+        n0 = db.query_df("SELECT COUNT(*) c FROM bars_minute WHERE ticker='000001.SZ'")["c"][0]
+        assert n0 == 0
+
+    def test_incremental_minute_multiperiod(self, tmp_path, limiter, monkeypatch):
+        """Task #25：标的已缓存 5m 与 1m 两周期，增量更新应两周期都补当日分钟线。"""
+        svc = AutoLoadService(_make_db(tmp_path), limiter)
+        db = svc._db
+        today = datetime.now()
+        today_str = today.strftime("%Y-%m-%d 09:31:00")
+        db.execute(
+            "INSERT INTO cache_catalog "
+            "(ticker, market, name, has_minute, auto_load_enabled, minute_periods) "
+            "VALUES ('600519.SH','a_share','茅台',TRUE,TRUE,'5,1')")
+        fetched = []
+
+        def fake(symbol=None, period="5", start_date="", end_date=""):
+            fetched.append(period)
+            rows = [{"时间": today_str, "开盘": 1.0, "最高": 1.0,
+                     "最低": 1.0, "收盘": 1.0, "成交量": 1, "成交额": 1.0}]
+            return MockAKShareDF(rows)
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", fake, raising=False)
+
+        res = svc.incremental_update_minute(now=today)
+        assert res["processed"] == 1
+        # 两周期都被拉取
+        assert set(fetched) == {"5", "1"}
+        n = db.query_df("SELECT COUNT(*) c FROM bars_minute WHERE ticker='600519.SH'")["c"][0]
+        assert n == 2  # 5m 与 1m 各一根（同 bar_time 不同周期共存）

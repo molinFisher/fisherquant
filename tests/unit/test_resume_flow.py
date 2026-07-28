@@ -60,13 +60,19 @@ def test_T1_resume_after_interruption(auto_load_service, monkeypatch):
 
 
 def test_T2_resume_when_recover_idle_but_bars_exist(auto_load_service, monkeypatch):
-    """recover 落到 idle(sid 空、bars 有数据) → 点继续应仍能启动(start_session 分支)。"""
+    """recover 落到 idle(sid 空、bars 有数据) → 点继续应仍能启动(start_session 分支)。
+
+    D-4：自动加载宇宙严格为 auto_load_enabled=TRUE，故这里显式纳入 X.SH，
+    以验证 resume→start_session 对「已启用宇宙」的正常加载链路。
+    """
     svc = auto_load_service
     monkeypatch.setattr(svc, "_download", _fake_download)
     # recover 的 idle 分支：sid 空 + bars_daily 有数据
     svc._db.execute("INSERT INTO bars_daily "
                     "(ticker,trade_date,open,high,low,close,volume,amount,market,adj_factor) "
                     "VALUES ('X.SH','2024-01-02',1,2,0.5,1.5,100,1000,'a_share',1)")
+    # D-4：显式纳入自动加载宇宙（否则空宇宙按设计不自动加载）
+    svc._catalog.set_auto_load_enabled("X.SH", True)
     svc._set_kv("session_id", "")
     svc._set_kv("phase", PHASE_IDLE)
     st = svc.recover()
@@ -83,7 +89,10 @@ def test_T2_resume_when_recover_idle_but_bars_exist(auto_load_service, monkeypat
 
 
 def test_T3_resume_sessionid_nonempty_but_ledger_empty(auto_load_service, monkeypatch):
-    """sid 非空，但账本已被清空(pending=0) → resume 应 fallback 到 start 而非报 idle。"""
+    """sid 非空，但账本已被清空(pending=0) → resume 应 fallback 到 start 而非报 idle。
+
+    D-4：宇宙严格为 auto_load_enabled=TRUE，故显式纳入 Y.SH 以验证 resume→start 链路。
+    """
     svc = auto_load_service
     monkeypatch.setattr(svc, "_download", _fake_download)
     monkeypatch.setattr(svc, "_load_index_codes", lambda: ["A.SH", "B.SH"])
@@ -92,6 +101,8 @@ def test_T3_resume_sessionid_nonempty_but_ledger_empty(auto_load_service, monkey
     svc._db.execute("INSERT INTO bars_daily "
                     "(ticker,trade_date,open,high,low,close,volume,amount,market,adj_factor) "
                     "VALUES ('Y.SH','2024-01-02',1,2,0.5,1.5,100,1000,'a_share',1)")
+    # D-4：显式纳入自动加载宇宙（否则空宇宙按设计不自动加载）
+    svc._catalog.set_auto_load_enabled("Y.SH", True)
     svc._set_kv("session_id", "stale-sid")
     svc._set_kv("phase", PHASE_IDLE)
     st = svc.resume_session()

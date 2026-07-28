@@ -81,6 +81,8 @@ def test_reload_force_full_marks_plan(auto_load_service):
         f"VALUES ('600519.SH','{fresh_date}',1,1,1,1,1,1.0,'a_share',1.0)")
     svc._db.execute(
         "INSERT INTO symbol_dict (ticker,code,name,market) VALUES ('600519.SH','600519','茅台','a_share')")
+    # D-4：自动加载宇宙严格为 auto_load_enabled=TRUE，故显式纳入 600519 以驱动 reload 链路
+    svc._catalog.set_auto_load_enabled("600519.SH", True)
     # 普通 reload：库有数据 → 至少 600519 被 SKIP
     svc.reload(force_full=False)
     _wait(svc)

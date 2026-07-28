@@ -6,18 +6,24 @@ V1.4 起目录页数据源由 bars_daily 聚合切换为 cache_catalog（v_cache
 - 「数据类型」多选筛选为 AND 语义（勾选日线+分钟 = 两者兼备的标的）。
 
 轮询（3s）只更新 DataTable.data，绝不重建容器（保留翻页位置，V1.3 回归修复）。
+
+联动：
+- 联动 B（IC-2 / U-2）：看板跳转过来时预置筛选 + 激活 tab-cached，消费后清空 ?focus=；
+- 联动 A（IC-1 / FR-3.1 / FR-7.5）：行内「加入看板」/ 批量加入 → 写看板自选 +
+  置 auto_load_enabled=TRUE + 跳转行情看板定位该标的。
 """
 
 from dash import Input, Output, State, callback, no_update, html, dash_table
 
 from fisher.dash_app.services import get_data_service, get_cache_catalog_service
 
-# 覆盖度徽标：列名缩写 -> (has_* 字段, 类型全名)。财务为 P2 折叠项，暂不展示（#24）。
+# 覆盖度徽标：列名缩写 -> (has_* 字段, 类型全名)。U-1：日/分/实/复/财 五类（Task #24）。
 _BADGES = [
     ("日", "has_daily", "日线"),
     ("分", "has_minute", "分钟线"),
     ("实", "has_realtime", "实时快照"),
     ("复", "has_adj", "复权因子"),
+    ("财", "has_financials", "财务数据"),
 ]
 
 
@@ -29,9 +35,12 @@ def _coverage_markdown(row: dict) -> str:
         if flag_col == "has_daily" and has:
             tip = f"{full_name} {row.get('daily_start', '')} ~ {row.get('daily_end', '')}"
         elif flag_col == "has_minute" and has:
-            tip = f"{full_name}（近 60 天窗口）"
+            periods = row.get("minute_periods")
+            tip = f"{full_name}（近 60 天窗口）周期：{periods or '5'}"
         elif flag_col == "has_realtime" and has:
             tip = f"{full_name} 最新 {row.get('realtime_ts', '')}"
+        elif flag_col == "has_financials" and has:
+            tip = f"{full_name} 最新报告期 {row.get('fin_report_end', '')}"
         elif has:
             tip = f"已缓存{full_name}"
         else:
@@ -64,6 +73,8 @@ def _catalog_rows(market_filter="all", type_filter=None, text_filter="") -> list
                 "minute_rows": r.get("minute_rows", 0),
                 "start_date": str(r.get("daily_start") or "—"),
                 "end_date": str(r.get("daily_end") or "—"),
+                # 联动 A（IC-1 / FR-3.1）：去行情看板并定位该标的
+                "add_board": f"[加入看板](/quote-board?focus={r.get('ticker', '')})",
             }
         )
     return out
@@ -78,6 +89,7 @@ _COLUMNS = [
     {"name": "分钟条数", "id": "minute_rows"},
     {"name": "起始日期", "id": "start_date"},
     {"name": "最新日期", "id": "end_date"},
+    {"name": "加入看板", "id": "add_board", "presentation": "markdown"},
 ]
 
 
@@ -208,6 +220,63 @@ def register_data_cache_callbacks(app):
             return False, no_update
         tickers = [table_data[idx]["ticker"] for idx in selected_rows]
         return True, _delete_confirm_text(tickers, delete_type or "all")
+
+    @app.callback(
+        # 联动 B（IC-2 / U-2）：看板跳转过来时预置筛选并激活「已缓存」tab，消费后清空 ?focus=
+        Output("cache-filter-input", "value"),
+        Output("data-center-tabs", "active_tab"),
+        Output("url", "search"),
+        Input("url", "search"),
+        State("url", "pathname"),
+        prevent_initial_call=True,
+    )
+    def consume_focus(search, pathname):
+        from urllib.parse import parse_qs
+        if not search or pathname != "/data-center":
+            return no_update, no_update, no_update
+        q = parse_qs(search.lstrip("?"))
+        focus = (q.get("focus") or [None])[0]
+        tab = (q.get("tab") or [None])[0]
+        if not focus or tab != "tab-cached":
+            return no_update, no_update, no_update
+        # 预置筛选 + 激活 tab；清空 focus 避免手动刷新反复置顶（U-2）
+        return focus, "tab-cached", "?tab=tab-cached"
+
+    @app.callback(
+        # 联动 A（IC-1 / FR-3.1）：批量把当前筛选结果加入行情看板自选 +
+        # 置 auto_load_enabled=TRUE（FR-7.5）+ 跳转看板
+        Output("url", "pathname", allow_duplicate=True),
+        Output("url", "search", allow_duplicate=True),
+        Input("cache-add-all-board-btn", "n_clicks"),
+        State("cache-market-filter", "value"),
+        State("cache-type-filter", "value"),
+        State("cache-filter-input", "value"),
+        prevent_initial_call=True,
+    )
+    def batch_add_to_board(n_clicks, market_filter, type_filter, filter_text):
+        if not n_clicks:
+            return no_update, no_update
+        catalog = get_cache_catalog_service()
+        rows = catalog.get_cache_summary(
+            market=market_filter or "all",
+            data_types=list(type_filter or []),
+            text=filter_text or "",
+        )
+        tickers = [r["ticker"] for r in rows]
+        if not tickers:
+            return no_update, no_update
+        # 统一收敛到看板自选（去重）
+        from ..callbacks.quote_callbacks import _load_watchlist, _save_watchlist
+        watchlist = _load_watchlist() or []
+        for t in tickers:
+            if t not in watchlist:
+                watchlist.append(t)
+            try:
+                catalog.set_auto_load_enabled(t, True)
+            except Exception:
+                pass
+        _save_watchlist(watchlist)
+        return "/quote-board", "?focus=" + tickers[0]
 
 
 _TYPE_NAMES = {

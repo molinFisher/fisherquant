@@ -12,7 +12,7 @@ from ...store.engine import DuckDBManager
 from ...market.rate_limiter import RateLimiter
 from .models import resolve_ticker, AUTO_LOAD_CFG
 from .symbol_search import to_pinyin
-from .cache_catalog_service import CacheCatalogService
+from .cache_catalog_service import CacheCatalogService, parse_periods
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +218,26 @@ class AutoLoadService:
                 deduped.append(c)
         return deduped
 
+    def load_universe(self) -> list[str]:
+        """FR-7.1 / FR-7.5：自动加载宇宙 = cache_catalog.auto_load_enabled = TRUE 的标的。
+
+        仅当库为空（冷启动、且尚无显式宇宙）时回退到指数成分做初始引导，
+        避免全新安装完全没有自动加载；一旦已有日线数据（用户做过一次性获取或曾纳入宇宙），
+        严格以 auto_load_enabled 为准（D-4：防止一次性大批量获取把整库纳入每日自动加载、
+        冲破限频）。
+        """
+        universe = self._catalog.get_auto_load_universe()
+        if universe:
+            return universe
+        try:
+            cnt = int(self._db.query_df(
+                "SELECT COUNT(*) AS c FROM bars_daily")["c"][0])
+        except Exception:
+            cnt = 0
+        if cnt == 0:
+            return self._snapshot_universe()  # 冷启动引导
+        return []
+
     def _stop_background(self, timeout: float = 5.0):
         """停止在途后台循环（如用户重新「开始」），避免旧会话线程污染新账本（会话隔离）。
 
@@ -235,11 +255,14 @@ class AutoLoadService:
         with self._lock:
             self._stop_background()  # 先终止旧会话后台循环，避免其 UPDATE 误改新账本
             self._ensure_status_table()
-            universe = self._snapshot_universe()
+            universe = self.load_universe()  # FR-7.1：auto_load_enabled 收敛（冷启动回退指数）
             if not universe:
-                self._set_kv("phase", PHASE_ERROR)
-                self._set_kv("message", "无法获取成分股列表")
-                return {"phase": PHASE_ERROR, "message": "无法获取成分股列表"}
+                # D-4：有存量数据但无显式 auto_load_enabled 宇宙属预期空态，非「取数失败」；
+                # 仅冷启动(cnt==0)才回退指数成分。置 IDLE + 友好提示，避免误导用户为错误。
+                self._set_kv("phase", PHASE_IDLE)
+                self._set_kv("message", "无纳入自动加载的标的（在缓存目录勾选或加入行情看板以启用）")
+                return {"phase": PHASE_IDLE,
+                        "message": "无纳入自动加载的标的（在缓存目录勾选或加入行情看板以启用）"}
             plans = self.build_plan(universe, force_full=force_full)
             n_full = sum(1 for p in plans if p.kind == PLAN_FULL)
             n_gap = sum(1 for p in plans if p.kind == PLAN_GAP)
@@ -578,34 +601,41 @@ class AutoLoadService:
             s = min(r[1] for r in rows)
             e = max(r[1] for r in rows)
             self._catalog.record_coverage(
-                conn, ticker, market, data_type="minute", start=s, end=e)
+                conn, ticker, market, data_type="minute", start=s, end=e,
+                period=period)
         # 窗口外旧分钟线惰性清理，并把 minute_start 前移（验收#9）
-        self.prune_minute_window(ticker, now=now, window_days=window_days)
+        self.prune_minute_window(ticker, now=now, window_days=window_days, period=period)
         return len(rows)
 
-    def prune_minute_window(self, ticker: str, now=None, window_days: int = 60) -> int:
+    def prune_minute_window(self, ticker: str, now=None, window_days: int = 60,
+                           period: Optional[str] = None) -> int:
         """按可注入时钟 now 与窗口 window_days 清理窗口外旧分钟线（Task #4）。
 
         删除 bar_time < (now - window) 的分钟行，并将 cache_catalog.minute_start
         前移至剩余数据最早点（无剩余则置 NULL）。返回删除行数。
+
+        period 非空时仅清理该周期（多周期分钟线，PK 含 period）；为空则清理全部周期。
         """
         if now is None:
             now = datetime.now()
         cutoff = now - timedelta(days=window_days)
         deleted = 0
+        extra = " AND period=?" if period else ""
+        params = [ticker, cutoff] + ([period] if period else [])
         try:
             with self._db.transaction() as conn:
                 res = conn.execute(
-                    "SELECT COUNT(*) FROM bars_minute WHERE ticker=? AND bar_time < ?",
-                    [ticker, cutoff])
+                    "SELECT COUNT(*) FROM bars_minute WHERE ticker=? AND bar_time < ?" + extra,
+                    params)
                 deleted = int(res.fetchone()[0] or 0)
                 if deleted > 0:
                     conn.execute(
-                        "DELETE FROM bars_minute WHERE ticker=? AND bar_time < ?",
-                        [ticker, cutoff])
-                # 重新计算 minute_start（剩余数据最早点）
+                        "DELETE FROM bars_minute WHERE ticker=? AND bar_time < ?" + extra,
+                        params)
+                # 重新计算 minute_start（剩余数据最早点，按周期收敛）
+                p2 = [ticker] + ([period] if period else [])
                 row = conn.execute(
-                    "SELECT MIN(bar_time) FROM bars_minute WHERE ticker=?", [ticker]).fetchone()
+                    "SELECT MIN(bar_time) FROM bars_minute WHERE ticker=?" + extra, p2).fetchone()
                 new_start = row[0] if row and row[0] is not None else None
                 conn.execute(
                     "UPDATE cache_catalog SET minute_start=?, last_update=CURRENT_TIMESTAMP "
@@ -675,6 +705,52 @@ class AutoLoadService:
                 logger.warning("Incremental update failed %s: %s", t, e)
         self._set_kv("last_run", datetime.now().isoformat())
         return {"phase": "incremental", "processed": processed}
+
+    def incremental_update_minute(self, period: str = "5", now=None) -> dict:
+        """分钟线盘后增量（FR-7.2 / Task #25 多周期）：对「已缓存分钟线且纳入自动加载」的标的，
+        按各自已缓存的周期逐一补齐当日分钟线。
+
+        - 仅对 has_minute=TRUE AND auto_load_enabled=TRUE 的标的补当日，避免给从未缓存分钟线的
+          标的拉全量（一次性大批量获取不自动纳入分钟增量宇宙，D-4 收敛思路）；
+        - 每只标的读取 cache_catalog.minute_periods，对其中每个周期调用 fetch_and_store_minute
+          （单标的同事务写库 + record_coverage 累加周期 + 窗口惰性清理，FR-1.6）；
+          minute_periods 为空时回退默认 ['5']（与 P0 单一周期口径一致）；
+        - 受 RateLimiter 约束（_download_minute 内 acquire），单标的/单周期失败仅记日志不影响其余
+          （不污染 cache_catalog，仅成功写入才置 has_minute）；now 可注入，便于单测不依赖真实运行；
+        - processed 按「成功补到至少 1 个周期的标的」计数（与 incremental_update 口径一致）。
+        """
+        if now is None:
+            now = datetime.now()
+        try:
+            rows = self._db.query_df(
+                "SELECT ticker, COALESCE(minute_periods, '5') AS minute_periods "
+                "FROM cache_catalog WHERE has_minute = TRUE AND auto_load_enabled = TRUE")
+            tickers = ([(r["ticker"], r["minute_periods"]) for r in rows.iter_rows(named=True)]
+                       if len(rows) > 0 else [])
+        except Exception as e:
+            logger.warning("minute incremental universe query failed: %s", e)
+            tickers = []
+        if not tickers:
+            return {"phase": "incremental_minute", "processed": 0,
+                    "note": "no_minute_universe"}
+        today = now.date().isoformat()
+        processed = 0
+        for ticker, periods_csv in tickers:
+            market = market_from_ticker(ticker)
+            periods = parse_periods(periods_csv) if periods_csv else [period or "5"]
+            ticker_ok = False
+            for p in periods:
+                try:
+                    self.fetch_and_store_minute(
+                        ticker, market, start=today, end=today, period=p, now=now)
+                    ticker_ok = True
+                except Exception as e:
+                    logger.warning("minute incremental failed %s period=%s: %s",
+                                   ticker, p, e)
+            if ticker_ok:
+                processed += 1
+        self._set_kv("last_minute_run", now.isoformat())
+        return {"phase": "incremental_minute", "processed": processed}
 
     # ------------------------------------------------------------------ #
     # 状态查询与失败清单（UI / 首页）

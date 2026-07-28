@@ -234,6 +234,106 @@ class TestFetchBars:
             "SELECT has_minute FROM cache_catalog WHERE ticker='600519.SH'")
         assert df["has_minute"][0] is True
 
+    def test_fetch_minute_multiperiod_no_clobber(self, data_service, monkeypatch):
+        """多周期分钟线：取 5m 后再取 1m，两周期并存（PK 含 period，DELETE 命中单周期）"""
+        import akshare as ak
+
+        def mock_min_em(symbol=None, period="5", start_date="", end_date="", adjust=""):
+            from tests.conftest import MockAKShareDF
+            close = 100.0 if period == "5" else 200.0
+            return MockAKShareDF([
+                {"时间": "2024-01-02 09:35:00", "开盘": close, "最高": close + 1,
+                 "最低": close - 1, "收盘": close, "成交量": 1000, "成交额": 100000.0},
+            ])
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", mock_min_em, raising=False)
+
+        data_service.fetch_bars(
+            ["600519.SH"], "2024-01-01", "2024-01-31", data_type="minute", period="5")
+        data_service.fetch_bars(
+            ["600519.SH"], "2024-01-01", "2024-01-31", data_type="minute", period="1")
+
+        rows = data_service._db.query_df(
+            "SELECT period, close FROM bars_minute WHERE ticker='600519.SH' ORDER BY period")
+        assert len(rows) == 2
+        assert set(rows["period"]) == {"1", "5"}
+        # 同 bar_time 不同周期各自保留原始收盘，互不覆盖
+        by_period = dict(zip(rows["period"], rows["close"]))
+        assert by_period["5"] == 100.0 and by_period["1"] == 200.0
+
+    def test_fetch_adj_writes_adj_factors_and_catalog(self, data_service, monkeypatch):
+        """FR-2.4 / Task #21：复权因子入库——qfq+hfq 因子写入 adj_factors，has_adj=TRUE。"""
+        import akshare as ak
+        from tests.conftest import MockAKShareDF
+
+        def mock_zh_a_daily(symbol=None, start_date="", end_date="", adjust=""):
+            if adjust == "qfq_factor":
+                return MockAKShareDF([
+                    {"date": "2024-01-02", "qfq_factor": 1.0},
+                    {"date": "2024-01-03", "qfq_factor": 1.05},
+                ])
+            if adjust == "hfq_factor":
+                return MockAKShareDF([
+                    {"date": "2024-01-02", "hfq_factor": 1.0},
+                    {"date": "2024-01-03", "hfq_factor": 1.20},
+                ])
+            return MockAKShareDF([])
+
+        monkeypatch.setattr(ak, "stock_zh_a_daily", mock_zh_a_daily, raising=False)
+
+        results = data_service.fetch_bars(
+            ["600519.SH"], "2024-01-01", "2024-01-31", data_type="adj")
+        assert results["600519.SH"]["status"] == "ok"
+        assert results["600519.SH"].get("adj") is True
+
+        # adj_factors 同时含 qfq 与 hfq 两种口径
+        df = data_service._db.query_df(
+            "SELECT adj_type, COUNT(*) c FROM adj_factors "
+            "WHERE ticker='600519.SH' GROUP BY adj_type")
+        assert set(df["adj_type"]) == {"qfq", "hfq"}
+
+        # cache_catalog.has_adj=TRUE，adj_type 记默认 qfq
+        cat = data_service._db.query_df(
+            "SELECT has_adj, adj_type FROM cache_catalog WHERE ticker='600519.SH'")
+        assert cat["has_adj"][0] is True
+        assert cat["adj_type"][0] == "qfq"
+
+    def test_fetch_adj_hk_unsupported(self, data_service, monkeypatch):
+        """FR-2.4：港股无复权因子口径，取数失败并明示仅支持 A 股。"""
+        import akshare as ak
+
+        def mock_zh_a_daily(*a, **k):
+            raise AssertionError("港股不应请求复权因子接口")
+        monkeypatch.setattr(ak, "stock_zh_a_daily", mock_zh_a_daily, raising=False)
+
+        results = data_service.fetch_bars(
+            ["00700.HK"], "2024-01-01", "2024-01-31", data_type="adj")
+        assert results["00700.HK"]["status"] == "failed"
+        assert "A 股" in results["00700.HK"]["error"]
+
+    def test_get_adj_factor_series_readback(self, data_service, monkeypatch):
+        """Task #21 读路径：get_adj_factor_series 按口径回读因子序列。"""
+        import akshare as ak
+        from tests.conftest import MockAKShareDF
+
+        def mock_zh_a_daily(symbol=None, start_date="", end_date="", adjust=""):
+            if adjust == "qfq_factor":
+                return MockAKShareDF([{"date": "2024-01-02", "qfq_factor": 1.0},
+                                      {"date": "2024-01-03", "qfq_factor": 1.05}])
+            if adjust == "hfq_factor":
+                return MockAKShareDF([{"date": "2024-01-02", "hfq_factor": 1.0},
+                                      {"date": "2024-01-03", "hfq_factor": 1.20}])
+            return MockAKShareDF([])
+        monkeypatch.setattr(ak, "stock_zh_a_daily", mock_zh_a_daily, raising=False)
+
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31", data_type="adj")
+        qfq = data_service.get_adj_factor_series("600519.SH", "qfq")
+        hfq = data_service.get_adj_factor_series("600519.SH", "hfq")
+        assert qfq[0] == ("2024-01-02", 1.0)
+        assert qfq[-1] == ("2024-01-03", 1.05)
+        assert hfq[-1] == ("2024-01-03", 1.20)
+        assert data_service.has_adj_factor("600519.SH", "qfq") is True
+        assert data_service.has_adj_factor("000001.SZ", "qfq") is False
+
     def test_fetch_idempotent_boundary_no_shrink(self, data_service, mock_akshare):
         """验收 12：重复获取同区间，bars_daily 行数与 catalog 边界均不漂移。"""
         data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31")
@@ -414,3 +514,61 @@ class TestDeleteByType:
         assert data_service._db.query_df(
             "SELECT COUNT(*) c FROM bars_daily WHERE ticker='600519.SH'"
         ).to_dicts()[0]["c"] > 0
+
+
+class TestMinuteMultiPeriod:
+    """Task #25 后半部分：cache_catalog.minute_periods 记录已缓存周期 + 按周期读取。"""
+
+    def test_fetch_minute_records_period_in_catalog(self, data_service, monkeypatch):
+        """取分钟线后 catalog.minute_periods 记录该周期；再取另一周期时集合累积。"""
+        import akshare as ak
+        one_row = [{"时间": "2024-01-02 09:35:00", "开盘": 100.0, "最高": 101.0,
+                    "最低": 99.0, "收盘": 100.5, "成交量": 1000, "成交额": 100500.0}]
+
+        def mock_min_em(symbol=None, period="5", start_date="", end_date="", adjust=""):
+            from tests.conftest import MockAKShareDF
+            return MockAKShareDF(one_row)
+        monkeypatch.setattr(ak, "stock_zh_a_hist_min_em", mock_min_em, raising=False)
+
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31",
+                                data_type="minute", period="15")
+        df = data_service._db.query_df(
+            "SELECT has_minute, minute_periods FROM cache_catalog WHERE ticker='600519.SH'")
+        assert df["has_minute"][0] is True
+        assert df["minute_periods"][0] == "15"
+
+        # 再取 5m，周期集合应累积为 '5,15'（数值序）
+        data_service.fetch_bars(["600519.SH"], "2024-01-01", "2024-01-31",
+                                data_type="minute", period="5")
+        df2 = data_service._db.query_df(
+            "SELECT minute_periods FROM cache_catalog WHERE ticker='600519.SH'")
+        assert df2["minute_periods"][0] == "5,15"
+
+    def test_get_minute_bars_filters_by_period(self, data_service):
+        """get_minute_bars 按 (ticker, period) 精确过滤，不同周期互不串扰。"""
+        db = data_service._db
+        ts = "2024-01-02 09:35:00"
+        db.execute_many(
+            "INSERT INTO bars_minute "
+            "(ticker, period, bar_time, open, high, low, close, volume, amount, market) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [("600519.SH", "5", ts, 1.0, 1.0, 1.0, 1.0, 1, 1.0, "a_share"),
+             ("600519.SH", "1", ts, 2.0, 2.0, 2.0, 2.0, 1, 2.0, "a_share")])
+        five = data_service.get_minute_bars("600519.SH", "5")
+        assert len(five) == 1 and five[0]["close"] == 1.0
+        one = data_service.get_minute_bars("600519.SH", "1")
+        assert len(one) == 1 and one[0]["close"] == 2.0
+        # 默认 period='5'
+        assert len(data_service.get_minute_bars("600519.SH")) == 1
+
+    def test_catalog_minute_periods_tracking(self, data_service):
+        """parse_periods 排序去重 + get_minute_periods 默认回退 ['5']。"""
+        from fisher.dash_app.services.cache_catalog_service import parse_periods
+
+        assert parse_periods("5,1,15") == ["1", "5", "15"]
+        assert parse_periods("15,5") == ["5", "15"]
+        assert parse_periods("") == ["5"]
+        assert parse_periods(None) == ["5"]
+
+        cat = data_service._catalog
+        assert cat.get_minute_periods("600519.SH") == ["5"]

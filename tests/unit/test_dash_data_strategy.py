@@ -339,6 +339,25 @@ class FakeCatalogService:
         return self.summary
 
 
+class FakeCatalog:
+    """quote_callbacks 用的轻量 CacheCatalogService 替身（IC-3 / FR-4.3 / FR-3.3）。"""
+
+    def __init__(self, *a, **k):
+        self._tickers = {"600519.SH", "000001.SZ"}
+        self._has = {"600519.SH": True, "000001.SZ": False}
+
+    def get_tickers_with_data(self):
+        return set(self._tickers)
+
+    def get_coverage_for_tickers(self, tickers):
+        return {t: {"ticker": t, "has_realtime": self._has.get(t, False),
+                    "has_minute": False, "has_daily": True, "has_adj": False}
+                for t in tickers if t in self._tickers}
+
+    def has_any_data(self, ticker):
+        return ticker in self._tickers
+
+
 def _summary_row(ticker="600519.SH", **kw):
     row = {
         "ticker": ticker, "name": "贵州茅台", "market": "a_share",
@@ -364,11 +383,15 @@ class TestDataCacheCallbacks:
         assert "暂无缓存数据" in "".join(_text(el))
 
     def test_coverage_markdown_badges(self):
-        """U-1：覆盖度徽标 ✓绿 ✗灰，hover 出类型名 + 边界日期。"""
+        """U-1：覆盖度徽标 ✓绿 ✗灰，hover 出类型名 + 边界日期。Task #24 含财务第 5 类。"""
         md = data_cache_callbacks._coverage_markdown(_summary_row())
-        assert "日✓" in md and "分✗" in md and "实✗" in md and "复✗" in md
+        assert "日✓" in md and "分✗" in md and "实✗" in md and "复✗" in md and "财✗" in md
         assert "#28a745" in md          # 有数据 → 绿
         assert "2024-01-01 ~ 2024-02-01" in md  # hover 边界
+        # 财务已缓存：财✓ + hover 报告期
+        md2 = data_cache_callbacks._coverage_markdown(
+            _summary_row(has_financials=True, fin_report_end="2024-12-31"))
+        assert "财✓" in md2 and "2024-12-31" in md2
 
     def test_force_refresh_cached_not_active(self, monkeypatch):
         monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
@@ -510,6 +533,74 @@ class TestDataCacheCallbacks:
         body_all = data_cache_callbacks._delete_confirm_text(["600519.SH"], "all")
         text_all = "".join(_text(body_all))
         assert "全部缓存数据" in text_all and "不可恢复" in text_all
+
+    def test_consume_focus_presets_and_clears(self):
+        """FR-4.2 / IC-2 / U-2：看板跳转过来时预置筛选 + 激活 tab-cached，消费后清空 ?focus=。"""
+        with capture_dash_callbacks() as app:
+            data_cache_callbacks.register_data_cache_callbacks(app)
+            # consume_focus 是最后注册的第 6 个回调
+            cb = _nth(app, 5)
+        # ?tab=tab-cached&focus=<ticker> → 预置筛选值 + 激活 tab + 清空 focus
+        f, tab, new_search = cb("?tab=tab-cached&focus=600519.SH", "/data-center")
+        assert f == "600519.SH"
+        assert tab == "tab-cached"
+        assert new_search == "?tab=tab-cached"
+        # 二次触发（focus 已清）→ 全部 no_update，避免循环
+        assert cb("?tab=tab-cached", "/data-center") == (no_update, no_update, no_update)
+        # 非 data-center 页面 → 忽略
+        assert cb("?tab=tab-cached&focus=600519.SH", "/quote-board") == (
+            no_update, no_update, no_update)
+        # 无 focus → 忽略
+        assert cb("?tab=tab-query", "/data-center") == (no_update, no_update, no_update)
+
+    def test_batch_add_to_board_writes_watchlist_and_redirects(self, monkeypatch, tmp_path):
+        """IC-1 / FR-3.1 / FR-7.5：批量加入看板写自选 + 置 auto_load_enabled + 跳转看板。
+
+        batch_add_to_board 是第 7 个注册的回调（index 6）。
+        """
+        class _CatalogWithAutoLoad(FakeCatalogService):
+            def __init__(self, summary=None):
+                super().__init__(summary)
+                self.auto_enabled = []
+
+            def set_auto_load_enabled(self, ticker, enabled):
+                self.auto_enabled.append((ticker, enabled))
+
+        fake = _CatalogWithAutoLoad(summary=[
+            _summary_row(ticker="600519.SH"),
+            _summary_row(ticker="000001.SZ", daily_rows=8),
+        ])
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: fake)
+        # 看板自选读写落 tmp，避免污染项目磁盘
+        monkeypatch.setattr(quote_callbacks, "QB_WATCHLIST_FILE",
+                            str(tmp_path / "watchlist.json"))
+        with capture_dash_callbacks() as app:
+            data_cache_callbacks.register_data_cache_callbacks(app)
+            cb = _nth(app, 6)
+        # 无点击 → 不动作
+        assert cb(None, "all", [], "") == (no_update, no_update)
+        # 点击 → 写自选 + 置 auto_load_enabled + 跳转看板定位首标
+        pathname, search = cb(1, "all", [], "")
+        assert pathname == "/quote-board"
+        assert search == "?focus=600519.SH"
+        assert ("600519.SH", True) in fake.auto_enabled
+        assert ("000001.SZ", True) in fake.auto_enabled
+        # 验证 watchlist 已真实写入 tmp 文件
+        import json
+        from pathlib import Path
+        wl = json.loads(Path(tmp_path / "watchlist.json").read_text(encoding="utf-8"))
+        assert set(wl) == {"600519.SH", "000001.SZ"}
+
+    def test_batch_add_to_board_no_rows_noop(self, monkeypatch):
+        """空目录（无缓存标的）点击批量加入 → 不跳转、不写。"""
+        fake = FakeCatalogService(summary=[])
+        monkeypatch.setattr(data_cache_callbacks, "get_cache_catalog_service",
+                            lambda: fake)
+        with capture_dash_callbacks() as app:
+            data_cache_callbacks.register_data_cache_callbacks(app)
+            cb = _nth(app, 6)
+        assert cb(1, "all", [], "") == (no_update, no_update)
 
 
 # =========================================================================== #
@@ -695,16 +786,41 @@ class TestQuoteCallbacks:
         assert isinstance(tbl, dash_table.DataTable)
         assert tbl.data == data
 
+    def test_fetch_quote_data_goto_cache_link(self, monkeypatch):
+        """FR-4.2 / IC-2：每行带去缓存跳转链接，锚向 ?tab=tab-cached&focus=<ticker>。"""
+        db = FakeDuckDB(quote_rows=[
+            {"close": 110.0, "volume": 1000, "trade_date": "2024-01-03"},
+            {"close": 100.0, "volume": 2000, "trade_date": "2024-01-02"},
+        ])
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: db)
+        data = quote_callbacks._fetch_quote_data(["600519.SZ"])
+        assert data[0]["goto_cache"] == (
+            "[去缓存](/data-center?tab=tab-cached&focus=600519.SZ)")
+
+    def test_build_quote_table_goto_column(self):
+        data = [{"code": "600519", "name": "600519", "last_price": "110.00",
+                 "change_pct": "+1.00%", "volume": "1,000", "change_raw": 1.0,
+                 "goto_cache": "[去缓存](/data-center?tab=tab-cached&focus=600519)"}]
+        tbl = quote_callbacks._build_quote_table(data)
+        goto_col = next(c for c in tbl.columns if c["id"] == "goto_cache")
+        assert goto_col["presentation"] == "markdown"
+        # 带 goto_cache 时 data 形状应保持一致（不破坏其余断言）
+        assert tbl.data == data
+
     def test_load_qb_symbols(self, monkeypatch):
         db = FakeDuckDB(distinct_rows={"ticker": ["600519", "000001"]})
         monkeypatch.setattr(quote_callbacks, "DuckDBManager",
                             lambda *a, **k: db)
+        # IC-3：下拉选项来源改为 cache_catalog（已缓存宇宙），而非 bars_daily DISTINCT
+        monkeypatch.setattr(quote_callbacks, "CacheCatalogService",
+                            lambda *a, **k: FakeCatalog())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 0)
         res = cb("/quote-board")
-        assert res == [{"label": "600519", "value": "600519"},
-                       {"label": "000001", "value": "000001"}]
+        assert res == [{"label": "000001.SZ", "value": "000001.SZ"},
+                       {"label": "600519.SH", "value": "600519.SH"}]
 
     def test_update_watchlist_add(self, monkeypatch, tmp_path):
         db = FakeDuckDB(quote_rows=[
@@ -784,6 +900,328 @@ class TestQuoteCallbacks:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 3)
         assert cb("/quote-board") is False
+
+    def test_fetch_quote_data_daily_fallback_badge(self, monkeypatch):
+        """FR-6.2 / 验收 15：无实时快照 → 降级日频 + 徽标标记「实时✗(日频)」。"""
+        db = FakeDuckDB(quote_rows=[
+            {"close": 110.0, "volume": 1000, "trade_date": "2024-01-03"},
+            {"close": 100.0, "volume": 2000, "trade_date": "2024-01-02"}])
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: db)
+        data = quote_callbacks._fetch_quote_data(["600519.SZ"])
+        assert data[0]["daily_fallback"] is True
+        assert "日频" in data[0]["realtime_status"]
+        # 目录读取失败（测试替身）时覆盖度徽标为空
+        assert data[0]["coverage"] == ""
+
+    def test_quote_row_snapshot_source(self):
+        """FR-6.1：有实时快照 → 取 last_price/change_pct/volume，徽标「实时✓」。"""
+        row = quote_callbacks._quote_row(
+            "600519.SH",
+            {"last_price": 11.0, "change_pct": 1.5, "volume": 500},
+            {"has_realtime": True, "has_daily": True, "has_minute": False, "has_adj": False})
+        assert row["last_price"] == "11.00"
+        assert row["change_pct"] == "+1.50%"
+        assert row["daily_fallback"] is False
+        assert "实时✓" in row["realtime_status"]
+        assert "实✓" in row["coverage"] and "日✓" in row["coverage"]
+
+    def test_render_health(self, monkeypatch):
+        """FR-4.3：健康度汇总 + 批量去缓存入口。"""
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB())
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 4)
+        res = cb(["600519.SH", "000001.SZ"], 1)
+        text = "".join(_text(res))
+        assert "实时覆盖 0/2" in text
+        assert "批量去缓存补齐" in text
+
+    def test_consume_focus_board_reorder_and_clear(self, monkeypatch):
+        """FR-3.3 / IC-1 / U-2：聚焦标的置顶 + 消费后清空 ?focus=。"""
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB())
+        monkeypatch.setattr(quote_callbacks, "CacheCatalogService",
+                            lambda *a, **k: FakeCatalog())
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 5)
+        wl, tbl, new_search = cb("?focus=600519.SH", "/quote-board", ["000001.SZ"])
+        assert wl[0] == "600519.SH" and wl == ["600519.SH", "000001.SZ"]
+        assert new_search == ""  # focus 已清除
+        assert isinstance(tbl, dash_table.DataTable)
+
+    def test_consume_focus_board_dead_symbol_rejected(self, monkeypatch):
+        """FR-5.3：死标（无缓存）聚焦时不入自选，仅清除参数。"""
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB())
+
+        class DeadCatalog:
+            def __init__(self, *a, **k): pass
+            def has_any_data(self, t): return False
+
+        monkeypatch.setattr(quote_callbacks, "CacheCatalogService",
+                            lambda *a, **k: DeadCatalog())
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 5)
+        wl, tbl, new_search = cb("?focus=999999.SH", "/quote-board", ["000001.SZ"])
+        assert wl is no_update and tbl is no_update
+        assert new_search == ""
+
+
+    # ----------------------------------------------------------------- #
+    # Task #20：存量 watchlist pruning 清死标（FR-5.3 / T-4）
+    # ----------------------------------------------------------------- #
+    def test_prune_watchlist_removes_dead_keeps_live(self, monkeypatch):
+        """FR-5.3 / T-4：_prune_watchlist 移除死标（has_any_data==False），保留活标。"""
+        class PruneCatalog:
+            def __init__(self, *a, **k): pass
+            def has_any_data(self, ticker):
+                return ticker in {"600519.SH", "000001.SZ"}
+        monkeypatch.setattr(quote_callbacks, "_catalog", lambda: PruneCatalog())
+        wl = ["600519.SH", "999999.SH", "000001.SZ", "888888.SH"]
+        kept, removed = quote_callbacks._prune_watchlist(wl)
+        assert kept == ["600519.SH", "000001.SZ"]
+        assert set(removed) == {"999999.SH", "888888.SH"}
+
+    def test_prune_watchlist_catalog_error_fail_open(self, monkeypatch):
+        """FR-5.3 fail-open：目录不可读时不裁剪（kept==wl, removed==[]），避免误删。"""
+        def _boom():
+            raise RuntimeError("db down")
+        monkeypatch.setattr(quote_callbacks, "_catalog", _boom)
+        wl = ["600519.SH", "999999.SH"]
+        kept, removed = quote_callbacks._prune_watchlist(wl)
+        assert kept == wl and removed == []
+
+    def test_prune_watchlist_empty_input(self, monkeypatch):
+        """空列表裁剪返回空，不报错。"""
+        monkeypatch.setattr(quote_callbacks, "_catalog", lambda: None)
+        kept, removed = quote_callbacks._prune_watchlist([])
+        assert kept == [] and removed == []
+
+    def test_update_watchlist_prunes_dead_symbols(self, monkeypatch, tmp_path):
+        """FR-5.3 / T-4：刷新行情看板时清理 store 中死标并回写文件。"""
+        import json
+        from pathlib import Path
+        wl_file = tmp_path / "watchlist.json"
+        wl_file.write_text(json.dumps(["600519.SH", "999999.SH"], ensure_ascii=False),
+                           encoding="utf-8")
+        monkeypatch.setattr(quote_callbacks, "QB_WATCHLIST_FILE", str(wl_file))
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB(quote_rows=[]))
+        class PruneCatalog:
+            def __init__(self, *a, **k): pass
+            def has_any_data(self, ticker):
+                return ticker == "600519.SH"
+        monkeypatch.setattr(quote_callbacks, "CacheCatalogService",
+                            lambda *a, **k: PruneCatalog())
+        monkeypatch.setattr(quote_callbacks, "ctx", CtxStub(
+            triggered=[{"prop_id": "qb-manual-refresh.n_clicks"}]))
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 1)
+        watchlist, tbl = cb(None, 1, None, None, ["600519.SH", "999999.SH"])
+        assert watchlist == ["600519.SH"]
+        assert isinstance(tbl, dash_table.DataTable)
+        updated = json.loads(Path(wl_file).read_text(encoding="utf-8"))
+        assert updated == ["600519.SH"]
+
+    def test_prune_watchlist_on_load_ignores_other_pages(self, monkeypatch):
+        """FR-5.3：非 /quote-board 路由不裁剪（no_update, no_update）。"""
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB())
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 7)
+        assert cb("/data-center") == (no_update, no_update)
+
+    def test_prune_watchlist_on_load_prunes_and_renders(self, monkeypatch, tmp_path):
+        """FR-5.3 / T-4：导航到 /quote-board 即清理死标并渲染活标，且回写文件。"""
+        import json
+        from pathlib import Path
+        wl_file = tmp_path / "watchlist.json"
+        wl_file.write_text(json.dumps(["600519.SH", "999999.SH"], ensure_ascii=False),
+                           encoding="utf-8")
+        monkeypatch.setattr(quote_callbacks, "QB_WATCHLIST_FILE", str(wl_file))
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB(quote_rows=[]))
+        class PruneCatalog:
+            def __init__(self, *a, **k): pass
+            def has_any_data(self, ticker):
+                return ticker == "600519.SH"
+        monkeypatch.setattr(quote_callbacks, "CacheCatalogService",
+                            lambda *a, **k: PruneCatalog())
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 7)
+        kept, tbl = cb("/quote-board")
+        assert kept == ["600519.SH"]
+        assert isinstance(tbl, dash_table.DataTable)
+        updated = json.loads(Path(wl_file).read_text(encoding="utf-8"))
+        assert updated == ["600519.SH"]
+
+    def test_prune_watchlist_on_load_empty_watchlist(self, monkeypatch, tmp_path):
+        """FR-5.3：空自选导航到看板 → 空态文案，不报错。"""
+        import json
+        from pathlib import Path
+        wl_file = tmp_path / "watchlist.json"
+        wl_file.write_text(json.dumps([], ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(quote_callbacks, "QB_WATCHLIST_FILE", str(wl_file))
+        monkeypatch.setattr(quote_callbacks, "DuckDBManager",
+                            lambda *a, **k: FakeDuckDB())
+        with capture_dash_callbacks() as app:
+            quote_callbacks.register_quote_callbacks(app)
+            cb = _nth(app, 7)
+        kept, tbl = cb("/quote-board")
+        assert kept == []
+        assert "自选列表为空" in "".join(_text(tbl))
+
+
+    def test_quote_row_adj_hfq_adjusts_price(self, monkeypatch):
+        """Task #22：日线降级路径按后复权口径换算最新价与涨跌幅。"""
+        import fisher.dash_app.callbacks.quote_callbacks as qc
+
+        class FakeDF:
+            def __init__(self, cols):
+                self._cols = cols
+            def __len__(self):
+                return len(next(iter(self._cols.values())))
+            def __getitem__(self, key):
+                return self._cols[key]
+
+        class FakeDB:
+            def query_df(self, sql, params=None):
+                if "bars_daily" in sql:
+                    return FakeDF({"close": [10.0, 9.0], "volume": [100, 90],
+                                   "trade_date": ["2024-03-02", "2024-03-01"]})
+                if "adj_factors" in sql:
+                    date = (params or [None])[-1]
+                    return FakeDF({"adj_factor": [2.0] if date == "2024-03-02" else [1.8]})
+                return FakeDF({})
+
+        monkeypatch.setattr(qc, "_get_db", lambda: FakeDB())
+        row = qc._quote_row("600519.SH", None, None, adj_mode="hfq")
+        assert row["last_price"] == "20.00"            # 10 * 2.0
+        pct = float(row["change_pct"].strip("%"))
+        assert abs(pct - (20.0 - 16.2) / 16.2 * 100) < 0.01  # 16.2 = 9 * 1.8
+
+    def test_quote_row_adj_qfq_normalized_to_raw(self, monkeypatch):
+        """Task #22：前复权最新日≈不复权价，涨跌幅与后复权一致（仅常数缩放差）。"""
+        import fisher.dash_app.callbacks.quote_callbacks as qc
+
+        class FakeDF:
+            def __init__(self, cols):
+                self._cols = cols
+            def __len__(self):
+                return len(next(iter(self._cols.values())))
+            def __getitem__(self, key):
+                return self._cols[key]
+
+        class FakeDB:
+            def query_df(self, sql, params=None):
+                if "bars_daily" in sql:
+                    return FakeDF({"close": [10.0, 9.0], "volume": [100, 90],
+                                   "trade_date": ["2024-03-02", "2024-03-01"]})
+                if "adj_factors" in sql:
+                    date = (params or [None])[-1]
+                    return FakeDF({"adj_factor": [2.0] if date == "2024-03-02" else [1.8]})
+                return FakeDF({})
+
+        monkeypatch.setattr(qc, "_get_db", lambda: FakeDB())
+        row = qc._quote_row("600519.SH", None, None, adj_mode="qfq")
+        assert row["last_price"] == "10.00"            # 前复权最新日 = 原始收盘
+        pct = float(row["change_pct"].strip("%"))
+        assert abs(pct - 23.46) < 0.01
+
+    def test_quote_row_adj_none_keeps_raw(self, monkeypatch):
+        """Task #22：不复权口径下日线降级最新价=原始收盘价。"""
+        import fisher.dash_app.callbacks.quote_callbacks as qc
+
+        class FakeDF:
+            def __init__(self, cols):
+                self._cols = cols
+            def __len__(self):
+                return len(next(iter(self._cols.values())))
+            def __getitem__(self, key):
+                return self._cols[key]
+
+        class FakeDB:
+            def query_df(self, sql, params=None):
+                if "bars_daily" in sql:
+                    return FakeDF({"close": [10.0, 9.0], "volume": [100, 90],
+                                   "trade_date": ["2024-03-02", "2024-03-01"]})
+                return FakeDF({})
+
+        monkeypatch.setattr(qc, "_get_db", lambda: FakeDB())
+        row = qc._quote_row("600519.SH", None, None, adj_mode="none")
+        assert row["last_price"] == "10.00"
+        pct = float(row["change_pct"].strip("%"))
+        assert abs(pct - (10.0 - 9.0) / 9.0 * 100) < 0.01
+
+    def test_quote_row_snapshot_unaffected_by_adj(self, monkeypatch):
+        """Task #22：实时快照路径不受复权口径影响（实际成交价）。"""
+        import fisher.dash_app.callbacks.quote_callbacks as qc
+        snap = {"last_price": 12.34, "pre_close": 12.0, "change_pct": 2.83,
+                "volume": 500, "ts": "2024-03-02 10:00:00"}
+        row = qc._quote_row("600519.SH", snap, None, adj_mode="hfq")
+        assert row["last_price"] == "12.34"
+        assert row["change_pct"] == "+2.83%"
+
+    def test_coverage_badges_includes_financials(self):
+        """Task #24：看板覆盖度徽标含第 5 类「财」，has_financials 决定绿/灰。"""
+        import fisher.dash_app.callbacks.quote_callbacks as qc
+        cov = {"has_daily": True, "has_minute": False, "has_realtime": True,
+               "has_adj": False, "has_financials": True}
+        md = qc._coverage_badges(cov)
+        assert "财✓" in md and "财务数据" in md
+        cov2 = dict(cov, has_financials=False)
+        assert "财✗" in qc._coverage_badges(cov2)
+
+
+def test_render_minute_chart_with_data(monkeypatch):
+    """Task #25：看板分钟 K 线回调——按所选周期读取首个自选标的并产出 candlestick figure。"""
+    import fisher.dash_app.callbacks.quote_callbacks as qc
+
+    class _FakeDataSvc:
+        def __init__(self):
+            self.captured_period = None
+        def get_minute_bars(self, ticker, period="5", limit=240):
+            self.captured_period = period
+            return [
+                {"bar_time": "2024-01-02 09:35:00", "open": 100.0, "high": 101.0,
+                 "low": 99.0, "close": 100.5, "volume": 1000},
+                {"bar_time": "2024-01-02 09:36:00", "open": 100.5, "high": 102.0,
+                 "low": 100.0, "close": 101.0, "volume": 1200},
+            ]
+    fake = _FakeDataSvc()
+    monkeypatch.setattr(qc, "get_data_service", lambda: fake)
+
+    with capture_dash_callbacks() as app:
+        quote_callbacks.register_quote_callbacks(app)
+        cb = app.get_callback("qb-minute-chart")
+        fig = cb("5", ["600519.SH"], 0)
+    assert fake.captured_period == "5"
+    # figure 为 plotly Figure：含 1 根 candlestick trace
+    assert len(fig.data) == 1
+    assert fig.data[0].type == "candlestick"
+
+
+def test_render_minute_chart_empty_watchlist(monkeypatch):
+    """Task #25：自选为空时返回带提示的空 figure，不抛错。"""
+    import fisher.dash_app.callbacks.quote_callbacks as qc
+
+    class _FakeDataSvc:
+        def get_minute_bars(self, ticker, period="5", limit=240):
+            return []
+    monkeypatch.setattr(qc, "get_data_service", lambda: _FakeDataSvc())
+
+    with capture_dash_callbacks() as app:
+        quote_callbacks.register_quote_callbacks(app)
+        cb = app.get_callback("qb-minute-chart")
+        fig = cb("5", [], 0)
+    assert len(fig.data) == 0  # 无 K 线，仅提示 annotation
 
 
 # =========================================================================== #

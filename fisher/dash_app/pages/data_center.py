@@ -92,6 +92,7 @@ def _create_query_tab():
                                         options=[
                                             {"label": "日线", "value": "daily"},
                                             {"label": "分钟线", "value": "minute"},
+                                            {"label": "复权因子", "value": "adj"},
                                             {"label": "财务数据", "value": "financials"},
                                         ],
                                         value="daily",
@@ -288,6 +289,8 @@ def _create_cached_tab():
                                         style={"maxWidth": "180px"},
                                     ),
                                     dbc.Button("删除选中", id="cache-delete-btn", color="danger"),
+                                    dbc.Button("批量加入看板", id="cache-add-all-board-btn",
+                                               color="success", outline=True),
                                 ],
                                 className="mb-2",
                             )

@@ -205,7 +205,7 @@ def register_data_callbacks(app):
         chips = []
         for item in pool:
             hk = _is_hk(item)
-            warn = data_type == "financials" and hk
+            warn = data_type in ("financials", "adj") and hk
             chips.append(
                 dbc.Badge(
                     [
@@ -223,7 +223,7 @@ def register_data_callbacks(app):
                     ],
                     color="warning" if warn else ("info" if hk else "danger"),
                     className="me-2 mb-2",
-                    title="财务数据仅支持 A 股，取数时将被跳过" if warn else "",
+                    title="复权因子/财务数据仅支持 A 股，取数时将被跳过" if warn else "",
                 )
             )
         footer = html.Div(f"共 {len(pool)} 个标的", className="text-muted small mt-1")
@@ -241,12 +241,13 @@ def register_data_callbacks(app):
         pool = pool or []
         if not pool:
             return True, "已选池为空——请先从搜索结果勾选标的"
-        if data_type == "financials":
+        if data_type in ("financials", "adj"):
             hk_items = [p for p in pool if _is_hk(p)]
+            label = "财务数据" if data_type == "financials" else "复权因子"
             if len(hk_items) == len(pool):
-                return True, "财务数据仅支持 A 股，请至少选择一个 A 股标的"
+                return True, f"{label}仅支持 A 股，请至少选择一个 A 股标的"
             if hk_items:
-                return False, f"注意：财务数据仅支持 A 股，池中 {len(hk_items)} 个港股将被跳过"
+                return False, f"注意：{label}仅支持 A 股，池中 {len(hk_items)} 个港股将被跳过"
         return False, ""
 
     @app.callback(
@@ -285,9 +286,10 @@ def register_data_callbacks(app):
 
         for item in items:
             symbol = item["value"]
-            # 产品决策（2026-07-28）：财务数据仅支持 A 股，港股跳过并明示
-            if data_type == "financials" and _is_hk(item):
-                skipped.append(f"⊘ {symbol}: 财务数据仅支持 A 股，已跳过")
+            # 产品决策（2026-07-28）：财务/复权数据仅支持 A 股，港股跳过并明示
+            if data_type in ("financials", "adj") and _is_hk(item):
+                label = "财务数据" if data_type == "financials" else "复权因子"
+                skipped.append(f"⊘ {symbol}: {label}仅支持 A 股，已跳过")
                 continue
             period = minute_period.replace("min", "") if minute_period else ""
             try:

@@ -27,6 +27,32 @@ logger = logging.getLogger(__name__)
 # 五类数据资产（与 cache_catalog 的 has_* 列、FR-1.1 严格对应）
 DATA_TYPES = ("daily", "minute", "realtime", "adj", "financials")
 
+# 逗号分隔周期集合的合并（Task #25 多周期分钟线）：并、排序、去重。
+def _merge_periods(existing: str, new_period: str) -> str:
+    """把新周期并入逗号分隔周期集合，按数值排序去重返回（如 '5' + '1' -> '1,5'）。"""
+    parts = [p.strip() for p in (existing or "").split(",") if p.strip()]
+    if new_period and new_period.strip():
+        parts.append(new_period.strip())
+    try:
+        parts = sorted(set(parts), key=lambda x: int(x))
+    except ValueError:
+        parts = sorted(set(parts))
+    return ",".join(parts)
+
+
+def parse_periods(value) -> list[str]:
+    """解析 minute_periods 列（'5,1,15'）为有序周期列表；空/异常回退 ['5']。"""
+    if not value:
+        return ["5"]
+    parts = [p.strip() for p in str(value).split(",") if p.strip()]
+    if not parts:
+        return ["5"]
+    try:
+        return sorted(set(parts), key=lambda x: int(x))
+    except ValueError:
+        return sorted(set(parts))
+
+
 # data_type -> (起始边界列, 结束边界列)；（realtime / adj / financials 无区间，走单列）
 _RANGE_FIELDS = {
     "daily": ("daily_start", "daily_end"),
@@ -58,6 +84,7 @@ class CacheCatalogService:
         realtime_ts=None,
         adj_type: Optional[str] = None,
         fin_report_end=None,
+        period: Optional[str] = None,
     ) -> None:
         """在调用方已开启的事务 `conn` 内 upsert 该标的的覆盖度。
 
@@ -106,6 +133,16 @@ class CacheCatalogService:
                 if end is not None:
                     sets.append(f"{ef}=GREATEST(COALESCE({ef}, ?), ?)")
                     params.extend([end, end])
+                # 多周期分钟线（Task #25）：把本次写入的 period 并入 minute_periods 集合
+                if data_type == "minute" and period:
+                    existing = conn.execute(
+                        "SELECT minute_periods FROM cache_catalog WHERE ticker=?",
+                        [ticker],
+                    ).fetchone()
+                    cur = (existing[0] if existing and existing[0] else "") or ""
+                    merged = _merge_periods(cur, period)
+                    sets.append("minute_periods=?")
+                    params.append(merged)
             elif data_type in _SINGLE_FIELDS:
                 col = _SINGLE_FIELDS[data_type]
                 val = realtime_ts if data_type == "realtime" else fin_report_end
@@ -125,7 +162,7 @@ class CacheCatalogService:
     # data_type -> 删除该类时需一并置 NULL 的边界/口径列（FR-1.5）
     _CLEAR_NULL_COLS = {
         "daily": ("daily_start", "daily_end"),
-        "minute": ("minute_start", "minute_end"),
+        "minute": ("minute_start", "minute_end", "minute_periods"),
         "realtime": ("realtime_ts",),
         "adj": ("adj_type",),
         "financials": ("fin_report_end",),
@@ -163,7 +200,7 @@ class CacheCatalogService:
             "SELECT ticker, name, market,",
             "has_daily, has_minute, has_realtime, has_adj, has_financials,",
             "auto_load_enabled, daily_start, daily_end, minute_start, minute_end,",
-            "realtime_ts, adj_type, fin_report_end, last_update",
+            "realtime_ts, adj_type, fin_report_end, minute_periods, last_update",
             "FROM cache_catalog",
         ]
         clauses: list[str] = []
@@ -230,7 +267,7 @@ class CacheCatalogService:
         try:
             df = self._db.query_df(
                 "SELECT ticker, has_daily, has_minute, has_realtime, has_adj, has_financials, "
-                "auto_load_enabled, realtime_ts "
+                "auto_load_enabled, realtime_ts, minute_periods "
                 f"FROM cache_catalog WHERE ticker IN ({placeholders})",
                 tickers,
             )
@@ -238,6 +275,17 @@ class CacheCatalogService:
         except Exception as e:
             logger.error("get_coverage_for_tickers 查询失败: %s", e)
             return {}
+
+    def get_minute_periods(self, ticker: str) -> list[str]:
+        """读取某标的已缓存的分钟周期列表（Task #25 多周期）；无缓存回退 ['5']。"""
+        try:
+            df = self._db.query_df(
+                "SELECT minute_periods FROM cache_catalog WHERE ticker=?", [ticker])
+            if len(df) > 0 and df["minute_periods"][0]:
+                return parse_periods(df["minute_periods"][0])
+        except Exception:
+            pass
+        return ["5"]
 
     def get_tickers_with_data(self) -> set[str]:
         """返回 has_daily OR has_minute = TRUE 的标的集合（FR-5.1 / FR-5.3 看板可加 + pruning）。"""

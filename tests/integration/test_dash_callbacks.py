@@ -226,45 +226,13 @@ def app_instance(tmp_path, mock_all_akshare):
     db = get_db()
     db.connect(db_path, read_pool_size=1)
 
-    # Create required tables
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS bars_daily (
-            ticker VARCHAR, trade_date DATE, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
-            adj_factor DOUBLE DEFAULT 1.0,
-            PRIMARY KEY (ticker, trade_date)
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS bars_minute (
-            ticker VARCHAR, bar_time TIMESTAMP, open DOUBLE, high DOUBLE, low DOUBLE,
-            close DOUBLE, volume BIGINT, amount DOUBLE, market VARCHAR,
-            PRIMARY KEY (ticker, bar_time)
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS auto_load_status (
-            key VARCHAR PRIMARY KEY, value VARCHAR NOT NULL
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS symbol_cache (
-            code VARCHAR PRIMARY KEY, name VARCHAR
-        )
-    """)
-    # 标的搜索 V1.2：只读标的字典（R-10）+ 灌入样本，供新搜索链路使用
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS symbol_dict (
-            ticker VARCHAR NOT NULL,
-            code VARCHAR NOT NULL,
-            name VARCHAR NOT NULL,
-            market VARCHAR NOT NULL,
-            pinyin_full VARCHAR DEFAULT '',
-            pinyin_abbr VARCHAR DEFAULT '',
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (ticker)
-        )
-    """)
+    # 用生产同款 init_schema 建全量表（含 cache_catalog / adj_factors / financials /
+    # snapshots 等），避免手动建表遗漏导致 record_coverage 等失败（FR-1.2 / FR-1.6）。
+    # 此前仅在 tmp DB 手动建 5 张表，漏建 cache_catalog，使 fetch_bars 的事务写
+    # 报 "bars_daily / cache_catalog does not exist"。
+    from fisher.store.schema import init_schema
+    init_schema(db)
+
     db.execute_many(
         "INSERT INTO symbol_dict (ticker, code, name, market, pinyin_full, pinyin_abbr) "
         "VALUES (?,?,?,?,?,?)",

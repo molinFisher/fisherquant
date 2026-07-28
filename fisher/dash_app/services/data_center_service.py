@@ -465,8 +465,9 @@ class DataCenterService:
                         results[sym] = {"status": "failed",
                                         "error": "分钟线暂仅支持 A 股"}
                         continue
+                    effective_period = period or "5"  # 取数口径与落库口径必须一致（多周期）
                     df = _retry_fetch(lambda: ak.stock_zh_a_hist_min_em(
-                        symbol=code, period=period or "1",
+                        symbol=code, period=effective_period,
                         start_date=start_compact, end_date=end_compact))
                     if df is not None and not df.empty:
                         ticker = resolve_ticker(code, "a_share")
@@ -475,17 +476,20 @@ class DataCenterService:
                             rows.append([ticker, str(r["时间"]), float(r["开盘"]),
                                          float(r["最高"]), float(r["最低"]), float(r["收盘"]),
                                          int(r["成交量"]), float(r["成交额"]),
-                                         "a_share", period or "5"])
+                                         "a_share", effective_period])
                         s, e = self._bounds(rows, 1)
-                        # v5 bars_minute 含 market/period 列，显式列名写入（避免列数漂移）
+                        # 多周期分钟线：DELETE 仅命中该 period，避免不同周期互相覆盖（PK 含 period）
                         with self._db.transaction() as conn:
-                            conn.execute("DELETE FROM bars_minute WHERE ticker=?", [ticker])
+                            conn.execute(
+                                "DELETE FROM bars_minute WHERE ticker=? AND period=?",
+                                [ticker, effective_period])
                             conn.executemany(
                                 "INSERT INTO bars_minute "
                                 "(ticker, bar_time, open, high, low, close, volume, amount, market, period) "
                                 "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
                             self._catalog.record_coverage(
-                                conn, ticker, "a_share", data_type="minute", start=s, end=e)
+                                conn, ticker, "a_share", data_type="minute", start=s,
+                                end=e, period=effective_period)
                         results[sym] = {"status": "ok", "count": len(rows)}
                     else:
                         results[sym] = {"status": "failed", "error": "该区间无数据"}
@@ -509,6 +513,50 @@ class DataCenterService:
                         results[sym] = {"status": "ok", "financials": True}
                     else:
                         results[sym] = {"status": "failed", "error": "无财务数据"}
+                elif data_type == "adj":
+                    # FR-2.4（Task #21）：复权因子入库。A 股仅——由 stock_zh_a_daily
+                    # 的 qfq_factor / hfq_factor 因子序列回填 adj_factors（PK ticker,trade_date,adj_type）。
+                    # 港股无复权因子口径，直接失败（与财务同策略）。
+                    if is_hk:
+                        results[sym] = {"status": "failed", "error": "复权因子仅支持 A 股"}
+                        continue
+                    ticker = resolve_ticker(code, "a_share")
+                    exch = "sh" if code.startswith(("6", "5", "9")) else "sz"
+                    adj_rows = []
+                    adj_fetched = False
+                    for adj_type, factor_col in (("qfq", "qfq_factor"),
+                                                 ("hfq", "hfq_factor")):
+                        try:
+                            df = _retry_fetch(lambda: ak.stock_zh_a_daily(
+                                symbol=f"{exch}{code}", start_date=start_compact,
+                                end_date=end_compact, adjust=f"{adj_type}_factor"))
+                        except Exception:
+                            df = None
+                        if df is None or (hasattr(df, "empty") and df.empty):
+                            continue
+                        adj_fetched = True
+                        for _, r in df.iterrows():
+                            d = r["date"]
+                            ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
+                                  else str(d)[:10])
+                            if (start and ds < start) or (end and ds > end):
+                                continue
+                            adj_rows.append([ticker, ds, adj_type,
+                                             float(r[factor_col])])
+                    if not adj_fetched or not adj_rows:
+                        results[sym] = {"status": "failed",
+                                        "error": "该区间无复权因子数据"}
+                        continue
+                    with self._db.transaction() as conn:
+                        conn.executemany(
+                            "INSERT OR REPLACE INTO adj_factors "
+                            "(ticker, trade_date, adj_type, adj_factor) "
+                            "VALUES (?,?,?,?)", adj_rows)
+                        # qfq 作为默认展示口径写入 adj_type；两种因子均入库于 adj_factors
+                        self._catalog.record_coverage(
+                            conn, ticker, "a_share", data_type="adj", adj_type="qfq")
+                    results[sym] = {"status": "ok", "adj": True,
+                                    "count": len(adj_rows)}
             except Exception as ex:
                 results[sym] = {"status": "failed", "error": str(ex)[:80]}
         return results
@@ -564,6 +612,52 @@ class DataCenterService:
             return df.to_dicts() if len(df) > 0 else []
         except Exception as e:
             logger.error("get_cached_table failed: %s", e)
+            return []
+
+    def get_adj_factor_series(self, ticker: str, adj_type: str = "qfq") -> list[tuple]:
+        """FR-2.4 / Task #22 复用：读取某标的复权因子序列。
+
+        返回 [(trade_date:str, adj_factor:float), ...] 按日期升序；无数据返回空列表。
+        口径 adj_type ∈ {qfq, hfq}。
+        """
+        try:
+            df = self._db.query_df(
+                "SELECT trade_date, adj_factor FROM adj_factors "
+                "WHERE ticker=? AND adj_type=? ORDER BY trade_date",
+                [ticker, adj_type])
+            return [(str(r["trade_date"])[:10], float(r["adj_factor"]))
+                    for r in df.to_dicts()]
+        except Exception as e:
+            logger.error("get_adj_factor_series failed ticker=%s: %s", ticker, e)
+            return []
+
+    def has_adj_factor(self, ticker: str, adj_type: str = "qfq") -> bool:
+        """FR-2.4：判断某标的是否已缓存指定口径的复权因子。"""
+        try:
+            df = self._db.query_df(
+                "SELECT 1 FROM adj_factors WHERE ticker=? AND adj_type=? LIMIT 1",
+                [ticker, adj_type])
+            return len(df) > 0
+        except Exception:
+            return False
+
+    def get_minute_bars(self, ticker: str, period: str = "5", limit: int = 240) -> list[dict]:
+        """FR-2.2 / Task #25 多周期：按 (ticker, period) 读取分钟线（窗口内，默认近 240 根）。
+
+        返回 [{bar_time, open, high, low, close, volume}, ...] 按时间升序；无数据返回空列表。
+        period 精确命中 bars_minute 复合主键的 period 维度，不同周期互不串扰。
+        """
+        try:
+            df = self._db.query_df(
+                "SELECT bar_time, open, high, low, close, volume FROM bars_minute "
+                "WHERE ticker=? AND period=? ORDER BY bar_time DESC LIMIT ?",
+                [ticker, period or "5", int(limit)])
+            rows = df.to_dicts() if len(df) > 0 else []
+            rows.reverse()  # 升序，供 K 线从左到右
+            return rows
+        except Exception as e:
+            logger.error("get_minute_bars failed ticker=%s period=%s: %s",
+                         ticker, period, e)
             return []
 
     # data_type -> 物理表删除语句（按类型删除，FR-1.5）

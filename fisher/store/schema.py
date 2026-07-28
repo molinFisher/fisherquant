@@ -2,7 +2,7 @@ import logging
 
 from .engine import DuckDBEngine
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # 标的搜索 V1.2（PRD FR-4.x）：只读标的字典表，替代旧 symbol_cache。
 # - ticker 为标准化主键（600519.SH / 00700.HK，港股零填充 5 位，见 R-01）
@@ -57,6 +57,7 @@ _CACHE_CATALOG_DDL = """
         daily_end         DATE,
         minute_start      TIMESTAMP,
         minute_end        TIMESTAMP,
+        minute_periods    VARCHAR,
         realtime_ts       TIMESTAMP,
         adj_type          VARCHAR,
         fin_report_end    DATE,
@@ -113,7 +114,7 @@ _CACHE_SUMMARY_VIEW_DDL = """
     SELECT
         c.ticker, c.name, c.market, c.auto_load_enabled,
         c.has_daily, c.has_minute, c.has_realtime, c.has_adj, c.has_financials,
-        c.daily_start, c.daily_end, c.realtime_ts,
+        c.daily_start, c.daily_end, c.realtime_ts, c.minute_periods,
         (SELECT COUNT(*) FROM bars_daily d WHERE d.ticker = c.ticker)  AS daily_rows,
         (SELECT COUNT(*) FROM bars_minute m WHERE m.ticker = c.ticker) AS minute_rows,
         (SELECT COUNT(*) FROM snapshots  s WHERE s.ticker = c.ticker)  AS realtime_rows,
@@ -148,6 +149,7 @@ _TABLES = [
     """
     CREATE TABLE IF NOT EXISTS bars_minute (
         ticker VARCHAR NOT NULL,
+        period VARCHAR NOT NULL DEFAULT '5',
         bar_time TIMESTAMP NOT NULL,
         open DOUBLE NOT NULL,
         high DOUBLE NOT NULL,
@@ -156,10 +158,11 @@ _TABLES = [
         volume BIGINT NOT NULL,
         amount DOUBLE NOT NULL,
         market VARCHAR DEFAULT 'a_share',
-        PRIMARY KEY (ticker, bar_time)
+        PRIMARY KEY (ticker, period, bar_time)
     )
     """,
     _CACHE_CATALOG_DDL,
+    "ALTER TABLE cache_catalog ADD COLUMN IF NOT EXISTS minute_periods VARCHAR",
     _ADJ_FACTORS_DDL,
     _FINANCIALS_DDL,
     _SNAPSHOTS_DDL,
@@ -305,7 +308,59 @@ _MIGRATIONS: dict[int, list[str]] = {
         _CACHE_SUMMARY_VIEW_DDL,
         "ALTER TABLE bars_minute ADD COLUMN IF NOT EXISTS period VARCHAR DEFAULT '5'",
     ],
+    # v6：bars_minute 多周期主键扩展（见 migrate 中 _migrate_bars_minute_pk 事务重建）
+    6: [],
 }
+
+
+def _bars_minute_pk_has_period(engine: DuckDBEngine) -> bool:
+    """检测 bars_minute 主键是否已含 period（v6 迁移是否已应用）。"""
+    try:
+        rows = engine.query_df(
+            "SELECT constraint_text FROM duckdb_constraints() "
+            "WHERE table_name='bars_minute' AND constraint_type='PRIMARY KEY'")
+        if len(rows) == 0:
+            return False
+        return "period" in str(rows["constraint_text"][0])
+    except Exception:
+        return False
+
+
+def _migrate_bars_minute_pk(conn) -> None:
+    """v6：bars_minute 主键 (ticker,bar_time) -> (ticker,period,bar_time)。
+
+    DuckDB 不支持 ALTER PRIMARY KEY，故在事务内重建新表（存量 period 统一回填 '5'）、
+    DROP 旧表、RENAME 新表；v_cache_summary 视图按名解析，DROP+RENAME 后自动恢复。
+    在整个事务内完成，失败回滚，可幂等重放（优先由 _bars_minute_pk_has_period 跳过）。
+    """
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE bars_minute_new (
+            ticker VARCHAR NOT NULL,
+            period VARCHAR NOT NULL DEFAULT '5',
+            bar_time TIMESTAMP NOT NULL,
+            open DOUBLE NOT NULL,
+            high DOUBLE NOT NULL,
+            low DOUBLE NOT NULL,
+            close DOUBLE NOT NULL,
+            volume BIGINT NOT NULL,
+            amount DOUBLE NOT NULL,
+            market VARCHAR DEFAULT 'a_share',
+            PRIMARY KEY (ticker, period, bar_time)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO bars_minute_new
+            (ticker, period, bar_time, open, high, low, close, volume, amount, market)
+        SELECT ticker, COALESCE(period, '5'), bar_time, open, high, low, close,
+               volume, amount, market
+        FROM bars_minute
+        """
+    )
+    conn.execute("DROP TABLE bars_minute")
+    conn.execute("ALTER TABLE bars_minute_new RENAME TO bars_minute")
 
 
 def migrate(engine: DuckDBEngine) -> None:
@@ -330,6 +385,18 @@ def migrate(engine: DuckDBEngine) -> None:
 
     for version in sorted(_MIGRATIONS.keys()):
         if version <= current:
+            continue
+        # v6：bars_minute 主键扩展为复合键，需重建表；DuckDB 不支持 ALTER PRIMARY KEY
+        if version == 6:
+            if _bars_minute_pk_has_period(engine):
+                engine.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)", [version])
+            else:
+                with engine.transaction() as conn:
+                    _migrate_bars_minute_pk(conn)
+                engine.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)", [version])
+            current = version
             continue
         for ddl in _MIGRATIONS[version]:
             engine.execute(ddl)

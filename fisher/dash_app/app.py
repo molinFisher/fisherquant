@@ -49,8 +49,20 @@ def init_on_startup():
             svc.recover()
         scheduler.add_job("auto_load_daily", svc.incremental_update,
                           trigger="cron", hour=16, minute=30)
+        # FR-7.2：分钟线每日盘后增量（16:30 覆盖 A 股 15:00 / 港股 16:00 双收盘）
+        scheduler.add_job("auto_load_minute", svc.incremental_update_minute,
+                          trigger="cron", hour=16, minute=30)
     except Exception as e:
         logger.error("Startup init failed: %s", e)
+
+    # FR-7.6 / D-5：盘中实时快照刷新守护线程（交易时段门控，复用自动加载单写连接）
+    try:
+        from fisher.dash_app.services.realtime_daemon import RealtimeDaemon
+        daemon = RealtimeDaemon(svc)
+        daemon.start()
+        logger.info("盘中实时快照守护线程已启动")
+    except Exception as e:
+        logger.error("实时守护线程启动失败: %s", e)
 
     # R-13：标的字典交易日定时刷新（默认 08:30，可由 configs/system.yaml 覆盖）
     # R-02：冷启动兜底——字典为空时后台立即刷新一次，避免首用搜索无结果
