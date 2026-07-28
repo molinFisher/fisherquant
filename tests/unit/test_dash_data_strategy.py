@@ -548,7 +548,7 @@ class TestDataCacheCallbacks:
         # 二次触发（focus 已清）→ 全部 no_update，避免循环
         assert cb("?tab=tab-cached", "/data-center") == (no_update, no_update, no_update)
         # 非 data-center 页面 → 忽略
-        assert cb("?tab=tab-cached&focus=600519.SH", "/quote-board") == (
+        assert cb("?tab=tab-cached&focus=600519.SH", "/market-watch") == (
             no_update, no_update, no_update)
         # 无 focus → 忽略
         assert cb("?tab=tab-query", "/data-center") == (no_update, no_update, no_update)
@@ -582,7 +582,7 @@ class TestDataCacheCallbacks:
         assert cb(None, "all", [], "") == (no_update, no_update)
         # 点击 → 写自选 + 置 auto_load_enabled + 跳转看板定位首标
         pathname, search = cb(1, "all", [], "")
-        assert pathname == "/quote-board"
+        assert pathname == "/market-watch"
         assert search == "?focus=600519.SH"
         assert ("600519.SH", True) in fake.auto_enabled
         assert ("000001.SZ", True) in fake.auto_enabled
@@ -818,7 +818,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 0)
-        res = cb("/quote-board")
+        res = cb("/market-watch")
         assert res == [{"label": "000001.SZ", "value": "000001.SZ"},
                        {"label": "600519.SH", "value": "600519.SH"}]
 
@@ -834,7 +834,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 1)
-        watchlist, tbl = cb(1, None, None, "600519.SZ", None)
+        watchlist, tbl = cb(1, None, None, "600519.SZ", None, "none")
         assert watchlist == ["600519.SZ"]
         assert isinstance(tbl, dash_table.DataTable)
         # 验证确实写入了 tmp 文件（真实读写逻辑，不污染项目磁盘）
@@ -851,7 +851,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 1)
-        watchlist, tbl = cb(None, 1, None, None, None)
+        watchlist, tbl = cb(None, 1, None, None, None, "none")
         assert watchlist == []
         assert isinstance(tbl, html.Div)
         assert "自选列表为空" in "".join(_text(tbl))
@@ -872,7 +872,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 3)
-        assert cb("/quote-board") is True
+        assert cb("/market-watch", None) is True
 
     def test_check_trading_hours_lunch_closed(self, monkeypatch):
         monkeypatch.setattr(quote_callbacks, "DuckDBManager",
@@ -881,7 +881,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 3)
-        assert cb("/quote-board") is False
+        assert cb("/market-watch", None) is False
 
     def test_check_trading_hours_weekend_closed(self, monkeypatch):
         monkeypatch.setattr(quote_callbacks, "DuckDBManager",
@@ -890,7 +890,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 3)
-        assert cb("/quote-board") is False
+        assert cb("/market-watch", None) is False
 
     def test_check_trading_hours_after_close(self, monkeypatch):
         monkeypatch.setattr(quote_callbacks, "DuckDBManager",
@@ -899,7 +899,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 3)
-        assert cb("/quote-board") is False
+        assert cb("/market-watch", None) is False
 
     def test_fetch_quote_data_daily_fallback_badge(self, monkeypatch):
         """FR-6.2 / 验收 15：无实时快照 → 降级日频 + 徽标标记「实时✗(日频)」。"""
@@ -933,7 +933,7 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 4)
-        res = cb(["600519.SH", "000001.SZ"], 1)
+        res = cb(["600519.SH", "000001.SZ"])
         text = "".join(_text(res))
         assert "实时覆盖 0/2" in text
         assert "批量去缓存补齐" in text
@@ -947,9 +947,10 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 5)
-        wl, tbl, new_search = cb("?focus=600519.SH", "/quote-board", ["000001.SZ"])
+        wl, tbl, new_search, chart = cb("?focus=600519.SH", "/market-watch", ["000001.SZ"])
         assert wl[0] == "600519.SH" and wl == ["600519.SH", "000001.SZ"]
         assert new_search == ""  # focus 已清除
+        assert chart == "600519.SH"  # FR-2.3：图表标的设为焦点
         assert isinstance(tbl, dash_table.DataTable)
 
     def test_consume_focus_board_dead_symbol_rejected(self, monkeypatch):
@@ -966,9 +967,10 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 5)
-        wl, tbl, new_search = cb("?focus=999999.SH", "/quote-board", ["000001.SZ"])
+        wl, tbl, new_search, chart = cb("?focus=999999.SH", "/market-watch", ["000001.SZ"])
         assert wl is no_update and tbl is no_update
         assert new_search == ""
+        assert chart is no_update
 
 
     # ----------------------------------------------------------------- #
@@ -1022,23 +1024,23 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 1)
-        watchlist, tbl = cb(None, 1, None, None, ["600519.SH", "999999.SH"])
+        watchlist, tbl = cb(None, 1, None, None, ["600519.SH", "999999.SH"], "none")
         assert watchlist == ["600519.SH"]
         assert isinstance(tbl, dash_table.DataTable)
         updated = json.loads(Path(wl_file).read_text(encoding="utf-8"))
         assert updated == ["600519.SH"]
 
     def test_prune_watchlist_on_load_ignores_other_pages(self, monkeypatch):
-        """FR-5.3：非 /quote-board 路由不裁剪（no_update, no_update）。"""
+        """FR-5.3：非 /market-watch 路由不裁剪（no_update, no_update）。"""
         monkeypatch.setattr(quote_callbacks, "DuckDBManager",
                             lambda *a, **k: FakeDuckDB())
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 7)
-        assert cb("/data-center") == (no_update, no_update)
+        assert cb("/data-center") == (no_update, no_update, no_update)
 
     def test_prune_watchlist_on_load_prunes_and_renders(self, monkeypatch, tmp_path):
-        """FR-5.3 / T-4：导航到 /quote-board 即清理死标并渲染活标，且回写文件。"""
+        """FR-5.3 / T-4：导航到 /market-watch 即清理死标并渲染活标，且回写文件。"""
         import json
         from pathlib import Path
         wl_file = tmp_path / "watchlist.json"
@@ -1056,8 +1058,9 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 7)
-        kept, tbl = cb("/quote-board")
+        kept, tbl, chart = cb("/market-watch")
         assert kept == ["600519.SH"]
+        assert chart == "600519.SH"
         assert isinstance(tbl, dash_table.DataTable)
         updated = json.loads(Path(wl_file).read_text(encoding="utf-8"))
         assert updated == ["600519.SH"]
@@ -1074,8 +1077,9 @@ class TestQuoteCallbacks:
         with capture_dash_callbacks() as app:
             quote_callbacks.register_quote_callbacks(app)
             cb = _nth(app, 7)
-        kept, tbl = cb("/quote-board")
+        kept, tbl, chart = cb("/market-watch")
         assert kept == []
+        assert chart is None
         assert "自选列表为空" in "".join(_text(tbl))
 
 
@@ -1201,7 +1205,7 @@ def test_render_minute_chart_with_data(monkeypatch):
     with capture_dash_callbacks() as app:
         quote_callbacks.register_quote_callbacks(app)
         cb = app.get_callback("qb-minute-chart")
-        fig = cb("5", ["600519.SH"], 0)
+        fig = cb("5", "600519.SH")
     assert fake.captured_period == "5"
     # figure 为 plotly Figure：含 1 根 candlestick trace
     assert len(fig.data) == 1
@@ -1220,7 +1224,7 @@ def test_render_minute_chart_empty_watchlist(monkeypatch):
     with capture_dash_callbacks() as app:
         quote_callbacks.register_quote_callbacks(app)
         cb = app.get_callback("qb-minute-chart")
-        fig = cb("5", [], 0)
+        fig = cb("5", None)
     assert len(fig.data) == 0  # 无 K 线，仅提示 annotation
 
 

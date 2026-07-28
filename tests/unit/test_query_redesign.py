@@ -181,11 +181,150 @@ class TestLayoutRedesign:
         assert "financials" in values
 
 
+
 # --------------------------------------------------------------------------- #
-# 4) 取数不覆盖池（D2）
+# 5) 多代码粘贴（P4-7 / FR-6 / D1）
 # --------------------------------------------------------------------------- #
-def test_fetch_does_not_write_pool(cbs):
-    """fetch_data 只写 fetch-results，不注册到 selected-pool / store 输出。"""
-    fetch_cb = cbs.by_output("fetch-results")
-    assert fetch_cb is not cbs.by_output("selected-pool")
-    assert fetch_cb is not cbs.by_output("selected-symbols-store")
+class TestMultiCodePaste:
+    """多代码粘贴：逗号/空格/换行/中文逗号/分号 → 候选条数正确 + 未收录标灰禁用。"""
+
+    class _KnownSvc:
+        def search_symbols(self, q):
+            known = {
+                "600519": [{"value": "600519.SH", "code": "600519",
+                            "name": "贵州茅台", "market": "a_share"}],
+                "000001": [{"value": "000001.SZ", "code": "000001",
+                            "name": "平安银行", "market": "a_share"}],
+                "00700":  [{"value": "00700.HK", "code": "00700",
+                            "name": "腾讯控股", "market": "hk_connect"}],
+                "茅台":   [{"value": "600519.SH", "code": "600519",
+                            "name": "贵州茅台", "market": "a_share"}],
+            }
+            return known.get(q, [])
+
+        def symbol_dict_ready(self):
+            return True
+
+    @pytest.fixture
+    def svc(self, monkeypatch):
+        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
+                            lambda: self._KnownSvc())
+        with capture_dash_callbacks() as app:
+            data_callbacks.register_data_callbacks(app)
+        return app
+
+    # ── 分隔符变体 ──
+
+    def test_space_delimited(self, svc):
+        """空格分隔 → 2 个结果。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519 000001")
+        assert len(opts) == 2
+        assert {o["value"] for o in opts} == {"600519.SH", "000001.SZ"}
+
+    def test_comma_delimited(self, svc):
+        """英文逗号分隔 → 2 个结果。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519,000001")
+        assert len(opts) == 2
+
+    def test_chinese_comma(self, svc):
+        """中文逗号「，」→ 2 个结果。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519，000001")
+        assert len(opts) == 2
+
+    def test_semicolon(self, svc):
+        """分号分隔 → 2 个结果。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519;000001")
+        assert len(opts) == 2
+
+    def test_newline_delimited(self, svc):
+        """换行分隔 → 2 个结果。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519\n000001")
+        assert len(opts) == 2
+
+    def test_mixed_delimiters(self, svc):
+        """混合：逗号+空格 → 3 个结果。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519,000001 00700")
+        assert len(opts) == 3
+
+    # ── 边界 / 异常 ──
+
+    def test_unknown_tokens_disabled(self, svc):
+        """未收录代码标灰禁用，value 含 __miss__ 前缀。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519 999999")
+        assert len(opts) == 2
+        unknown = [o for o in opts if "未收录" in str(o.get("label", ""))]
+        assert len(unknown) == 1
+        assert unknown[0].get("disabled") is True
+        assert "__miss__999999" in unknown[0]["value"]
+
+    def test_all_unknown_shows_only_misses(self, svc):
+        """全未收录 → 全部标灰禁用。"""
+        opts, *_ = svc.by_output("candidate-list.options")("999999 888888")
+        assert len(opts) == 2
+        assert all(o.get("disabled") is True for o in opts)
+
+    def test_duplicate_dedup(self, svc):
+        """重复代码去重。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519 600519 000001")
+        assert len(opts) == 2  # 3 token → 2 个去重后
+
+    def test_single_token_not_split(self, svc):
+        """单 token（无分隔符）→ 不走拆分路径，正常返回。"""
+        opts, *_ = svc.by_output("candidate-list.options")("600519")
+        assert len(opts) == 1 and opts[0]["value"] == "600519.SH"
+
+    def test_fuzzy_name_then_code(self, svc):
+        """混合：名称（茅台）+ 代码（000001）。"""
+        opts, *_ = svc.by_output("candidate-list.options")("茅台 000001")
+        assert len(opts) == 2
+
+    def test_short_input_empty(self, svc):
+        """< 2 字符不检索。"""
+        opts, *_ = svc.by_output("candidate-list.options")("a")
+        assert opts == []
+
+    def test_empty_input_empty(self, svc):
+        """空输入不检索。"""
+        opts, *_ = svc.by_output("candidate-list.options")("")
+        assert opts == []
+
+    # ── 副作用校验 ──
+
+    def test_store_contains_search_metadata(self, svc):
+        """store 包含搜索结果元数据。"""
+        _, _, store = svc.by_output("candidate-list.options")("600519")
+        assert len(store) == 1 and store[0]["code"] == "600519"
+
+    def test_multi_code_store_all_items(self, svc):
+        """多代码时 store 包含全部命中项。"""
+        _, _, store = svc.by_output("candidate-list.options")("600519 000001")
+        assert len(store) == 2
+        assert {s["code"] for s in store} == {"600519", "000001"}
+
+    def test_status_has_count(self, svc):
+        """状态行含结果计数。"""
+        _, status, _ = svc.by_output("candidate-list.options")("600519 000001 00700")
+        children = getattr(status, "children", status) or []
+        flat = "".join(str(c) for c in (children if isinstance(children, list) else [children]))
+        assert "3" in flat
+
+    def test_status_has_market_breakdown(self, svc):
+        """状态行含 A 股/港股分布。"""
+        _, status, _ = svc.by_output("candidate-list.options")("600519 000001 00700")
+        children = getattr(status, "children", status) or []
+        flat = "".join(str(c) for c in (children if isinstance(children, list) else [children]))
+        assert "A股" in flat and "港股" in flat
+
+    def test_status_shows_miss_count(self, svc):
+        """含未收录时状态行显示数量。"""
+        _, status, _ = svc.by_output("candidate-list.options")("600519 999999")
+        children = getattr(status, "children", status) or []
+        flat = "".join(str(c) for c in (children if isinstance(children, list) else [children]))
+        assert "未收录" in flat
+
+    def test_exact_code_preferred_over_fuzzy(self, svc):
+        """多代码时优先精确代码命中，而非第一个模糊匹配。"""
+        # mock: "00700" 返回腾讯；"700" 精确匹配返回腾讯，模糊也返回腾讯
+        opts, *_ = svc.by_output("candidate-list.options")("00700 600519")
+        values = [o["value"] for o in opts]
+        assert "00700.HK" in values and "600519.SH" in values

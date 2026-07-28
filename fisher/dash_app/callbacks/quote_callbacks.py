@@ -183,12 +183,15 @@ def _adj_factor(db, sym, trade_date, mode):
         return None
 
 
-def _quote_row(sym, snap, cov, adj_mode="none"):
+def _quote_row(sym, snap, cov, adj_mode="none", name_map=None):
     """构建单行行情数据：快照优先，无快照降级日线（FR-6.1/6.2）。
 
     adj_mode ∈ {none, qfq, hfq}：仅日线降级路径按复权口径换算最新价与涨跌幅
     （FR-2.4 / Task #22 口径一致性）；实时快照为实际成交价，不受复权影响。
+    name_map 为 ticker→中文名映射（FR-3），无映射时降级显示代码片段。
     """
+    cnt = sym.split(".")[0]
+    display_name = (name_map or {}).get(sym) or cnt
     daily_fallback = False
     if snap and snap.get("last_price") is not None:
         last = float(snap["last_price"])
@@ -238,7 +241,7 @@ def _quote_row(sym, snap, cov, adj_mode="none"):
     )
     return {
         "code": sym,
-        "name": sym.split(".")[0],
+        "name": display_name,
         "last_price": f"{last:.2f}" if last is not None else "-",
         "change_pct": f"{pct:+.2f}%" if pct is not None else "-",
         "volume": _fmt_volume(vol) if vol is not None else "-",
@@ -251,9 +254,11 @@ def _quote_row(sym, snap, cov, adj_mode="none"):
     }
 
 
-def _empty_row(sym, cov):
+def _empty_row(sym, cov, name_map=None):
+    cnt = sym.split(".")[0]
+    display_name = (name_map or {}).get(sym) or cnt
     return {
-        "code": sym, "name": sym.split(".")[0], "last_price": "-",
+        "code": sym, "name": display_name, "last_price": "-",
         "change_pct": "-", "volume": "-", "volume_raw": None,
         "change_raw": 0.0, "coverage": _coverage_badges(cov),
         "realtime_status": '<span style="color:#c8ccd0" title="无数据">—</span>',
@@ -264,15 +269,28 @@ def _empty_row(sym, cov):
 
 def _fetch_quote_data(symbols, adj_mode="none"):
     """FR-6 行情源切换 + FR-4.1 覆盖度徽标：快照优先，缺则降级日线。
-    adj_mode 透传复权口径（FR-2.4 / Task #22）。"""
+    adj_mode 透传复权口径（FR-2.4 / Task #22）。
+    FR-3：从 symbol_dict 加载中文名称映射。"""
     cov = _safe_coverage(symbols)
     snap = _safe_snapshots(symbols)
+    # FR-3：生成 ticker→中文名映射
+    name_map = {}
+    try:
+        db = _get_db()
+        ph = ",".join("?" for _ in symbols)
+        df = db.query_df(
+            "SELECT ticker, name FROM symbol_dict WHERE ticker IN ({})".format(ph),
+            list(symbols))
+        for r in df.to_dicts():
+            name_map[r["ticker"]] = r["name"]
+    except Exception:
+        pass
     data = []
     for sym in symbols:
         try:
-            data.append(_quote_row(sym, snap.get(sym), cov.get(sym), adj_mode))
+            data.append(_quote_row(sym, snap.get(sym), cov.get(sym), adj_mode, name_map))
         except Exception:
-            data.append(_empty_row(sym, cov.get(sym)))
+            data.append(_empty_row(sym, cov.get(sym), name_map))
     return data
 
 
@@ -289,13 +307,21 @@ def _build_quote_table(data, highlight=None):
         {"name": "覆盖度", "id": "coverage", "presentation": "markdown"},
         {"name": "实时", "id": "realtime_status", "presentation": "markdown"},
         {"name": "去缓存", "id": "goto_cache", "presentation": "markdown"},
+        {"name": "", "id": "remove"},  # FR-1.1：× 删除列
     ]
+    for r in data:
+        r.setdefault("remove", "×")
     style_data_conditional = [
         {"if": {"filter_query": "{change_raw} > 0", "column_id": "change_pct"},
          "color": "#dc3545"},
         {"if": {"filter_query": "{change_raw} < 0", "column_id": "change_pct"},
          "color": "#198754"},
         {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
+        # FR-1.1：× 删除列窄对齐 + hover 提示色
+        {"if": {"column_id": "remove"},
+         "textAlign": "center", "cursor": "pointer",
+         "maxWidth": 36, "minWidth": 36, "width": 36,
+         "color": "#dc3545", "fontWeight": "bold", "fontSize": "16px"},
     ]
     if highlight:
         style_data_conditional.append(
@@ -309,7 +335,8 @@ def _build_quote_table(data, highlight=None):
         page_size=15,
         markdown_options={"html": True},
         tooltip_data=[
-            {"volume": {"value": f"原始值：{r.get('volume_raw', '-')}", "type": "markdown"}}
+            {"volume": {"value": f"原始值：{r.get('volume_raw', '-')}", "type": "markdown"},
+             "remove": {"value": "移除此标的", "type": "markdown"}}
             for r in data
         ],
         tooltip_duration=2000,
@@ -340,9 +367,10 @@ def register_quote_callbacks(app):
         Input("qb-refresh-interval", "n_intervals"),
         State("qb-add-symbol-dropdown", "value"),
         State("qb-watchlist-store", "data"),
+        State("qb-adj-mode", "value"),  # FR-5：透传复权口径
         prevent_initial_call=True,
     )
-    def update_watchlist(add_clicks, refresh_clicks, auto_interval, new_symbol, watchlist):
+    def update_watchlist(add_clicks, refresh_clicks, auto_interval, new_symbol, watchlist, adj_mode):
         triggered_id = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
 
         # FR-5.3 / T-4：加载/刷新前清理死标（保留 store 中尚未落盘的焦点符号，
@@ -364,7 +392,7 @@ def register_quote_callbacks(app):
         if not watchlist:
             return watchlist, html.Div("自选列表为空，请添加标的", className="text-muted text-center mt-4")
 
-        table_data = _fetch_quote_data(watchlist)
+        table_data = _fetch_quote_data(watchlist, adj_mode)
         return watchlist, _build_quote_table(table_data)
 
     @app.callback(
@@ -377,8 +405,9 @@ def register_quote_callbacks(app):
     @app.callback(
         Output("qb-trading-status", "data"),
         Input("url", "pathname"),
+        Input("qb-refresh-interval", "n_intervals"),  # FR-6：心跳保持交易状态更新
     )
-    def check_trading_hours(pathname):
+    def check_trading_hours(pathname, n_intervals):
         import datetime
         now = datetime.datetime.now()
         weekday = now.weekday()
@@ -397,10 +426,10 @@ def register_quote_callbacks(app):
     @app.callback(
         Output("qb-health-div", "children"),
         Input("qb-watchlist-store", "data"),
-        Input("qb-refresh-interval", "n_intervals"),
     )
-    def render_health(watchlist, n_intervals):
-        """FR-4.3：看板变健康度仪表盘——实时/分钟覆盖率汇总 + 批量去缓存入口。"""
+    def render_health(watchlist):
+        """FR-4.3：看板健康度仪表盘——实时/分钟覆盖率汇总 + 批量去缓存入口。
+        FR-7：仅池变化时重建，去除 n_intervals（避免60秒心跳闪烁）。"""
         watchlist = watchlist or []
         cov = _safe_coverage(watchlist)
         total = len(watchlist)
@@ -421,6 +450,7 @@ def register_quote_callbacks(app):
         Output("qb-watchlist-store", "data", allow_duplicate=True),
         Output("qb-table-container", "children", allow_duplicate=True),
         Output("url", "search", allow_duplicate=True),
+        Output("qb-chart-symbol", "data", allow_duplicate=True),  # FR-2.3：焦点标的作为图表标的
         Input("url", "search"),
         State("url", "pathname"),
         State("qb-watchlist-store", "data"),
@@ -432,13 +462,14 @@ def register_quote_callbacks(app):
         - 仅当该标的在 cache_catalog 有任意覆盖时才入自选（防死标）；
         - 命中则置顶高亮并显示其行情；
         - 消费后清除 ?focus=，避免手动刷新反复置顶。
+        - FR-2.3：设置 qb-chart-symbol 为焦点标的。
         """
-        if not search or pathname != "/quote-board":
-            return no_update, no_update, no_update
+        if not search or pathname != "/market-watch":
+            return no_update, no_update, no_update, no_update
         q = parse_qs(search.lstrip("?"))
         focus = (q.get("focus") or [None])[0]
         if not focus:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         wl = list(watchlist or [])
         if focus not in wl:
@@ -446,7 +477,7 @@ def register_quote_callbacks(app):
                 wl.append(focus)
             else:
                 # 死标：不入自选，仅清除参数（FR-5.3 结构性归零思路）
-                return no_update, no_update, _strip_focus(search)
+                return no_update, no_update, _strip_focus(search), no_update
 
         # 联动 A（FR-3.1 / FR-7.5）：纳入自动加载宇宙（idempotent）
         try:
@@ -458,7 +489,7 @@ def register_quote_callbacks(app):
             wl.remove(focus)
             wl.insert(0, focus)  # 置顶高亮
         data = _fetch_quote_data(wl)
-        return wl, _build_quote_table(data, highlight=focus), _strip_focus(search)
+        return wl, _build_quote_table(data, highlight=focus), _strip_focus(search), focus
 
     @app.callback(
         Output("url", "pathname", allow_duplicate=True),
@@ -478,20 +509,21 @@ def register_quote_callbacks(app):
         # 否则与 update_watchlist / consume_focus_board 共享输出报 DuplicateCallback。
         Output("qb-watchlist-store", "data", allow_duplicate=True),
         Output("qb-table-container", "children", allow_duplicate=True),
+        Output("qb-chart-symbol", "data"),  # FR-2.3：初始化图表标的为首个
         Input("url", "pathname"),
         prevent_initial_call="initial_duplicate",
     )
     def prune_watchlist_on_load(pathname):
-        if pathname != "/quote-board":
-            return no_update, no_update
+        if pathname != "/market-watch":
+            return no_update, no_update, no_update
         wl = _load_watchlist() or []
         kept, removed = _prune_watchlist(wl)
         if removed:
             logger.info("watchlist_pruned removed=%s", removed)
             _save_watchlist(kept)
         if not kept:
-            return kept, html.Div("自选列表为空，请添加标的", className="text-muted text-center mt-4")
-        return kept, _build_quote_table(_fetch_quote_data(kept))
+            return kept, html.Div("自选列表为空，请添加标的", className="text-muted text-center mt-4"), None
+        return kept, _build_quote_table(_fetch_quote_data(kept)), kept[0]
 
 
     @app.callback(
@@ -508,26 +540,288 @@ def register_quote_callbacks(app):
             return html.Div("自选列表为空，请添加标的", className="text-muted text-center mt-4")
         return _build_quote_table(_fetch_quote_data(wl, adj_mode))
 
+    # ------------------------------------------------------------------ #
+    # FR-1.1：单行 × 删除 + FR-2.3：点击切换 K 线标的
+    # ------------------------------------------------------------------ #
     @app.callback(
-        # FR-2.2 / Task #25：看板分钟 K 线——按所选「分钟周期」读取首个自选标的的分钟线。
-        # period 切换 / 自选变化（watchlist-store）/ 自动刷新（interval）时重渲染；
-        # 输出唯一组件 qb-minute-chart，与其他回调无 Output 冲突。
+        Output("qb-watchlist-store", "data", allow_duplicate=True),
+        Output("qb-table-container", "children", allow_duplicate=True),
+        Output("qb-chart-symbol", "data", allow_duplicate=True),
+        Input("qb-data-table", "active_cell"),
+        State("qb-data-table", "data"),
+        State("qb-watchlist-store", "data"),
+        State("qb-adj-mode", "value"),
+        prevent_initial_call=True,
+    )
+    def on_table_cell_click(active_cell, table_data, watchlist, adj_mode):
+        """监听 DataTable 单元格点击。
+
+        - column_id == "remove" → 单行删除该标的
+        - 其他列 → 切换 K 线图表标的为该行标的
+        """
+        if not active_cell:
+            return no_update, no_update, no_update
+        row = active_cell.get("row")
+        col = active_cell.get("column_id", "")
+        if row is None or not table_data or row >= len(table_data):
+            return no_update, no_update, no_update
+        ticker = table_data[row].get("code", "")
+        if not ticker:
+            return no_update, no_update, no_update
+
+        if col == "remove":
+            wl = list(watchlist or [])
+            if ticker not in wl:
+                return no_update, no_update, no_update
+            wl = [t for t in wl if t != ticker]
+            _save_watchlist(wl)
+            if not wl:
+                return wl, html.Div("自选列表为空，请添加标的",
+                                    className="text-muted text-center mt-4"), None
+            return wl, _build_quote_table(_fetch_quote_data(wl, adj_mode)), (
+                ticker if ticker in wl else wl[0])
+
+        # 非删除列 → 切换 K 线标的
+        return no_update, no_update, ticker
+
+    # ------------------------------------------------------------------ #
+    # FR-1.2/FR-4：批量删除——选中后显示按钮，点击删除选中
+    # ------------------------------------------------------------------ #
+    @app.callback(
+        Output("qb-delete-bar", "children"),
+        Input("qb-data-table", "selected_rows"),
+        State("qb-data-table", "data"),
+    )
+    def render_delete_btn_visibility(selected_rows, table_data):
+        if not selected_rows or not table_data:
+            return ""
+        count = len(selected_rows)
+        return html.Div([
+            html.Span(f"已选中 {count} 个标的", className="text-muted me-2 small"),
+            dbc.Button(f"删除选中 ({count})", id="qb-delete-selected-btn",
+                       color="danger", size="sm"),
+        ], className="d-flex align-items-center")
+
+    @app.callback(
+        Output("qb-watchlist-store", "data", allow_duplicate=True),
+        Output("qb-table-container", "children", allow_duplicate=True),
+        Output("qb-chart-symbol", "data", allow_duplicate=True),
+        Input("qb-delete-selected-btn", "n_clicks"),
+        State("qb-data-table", "selected_rows"),
+        State("qb-data-table", "data"),
+        State("qb-watchlist-store", "data"),
+        State("qb-adj-mode", "value"),
+        prevent_initial_call=True,
+    )
+    def on_delete_selected(n_clicks, selected_rows, table_data, watchlist, adj_mode):
+        if not n_clicks or not selected_rows or not table_data:
+            return no_update, no_update, no_update
+        tickers_to_remove = {table_data[r].get("code", "") for r in selected_rows}
+        wl = [t for t in (watchlist or []) if t not in tickers_to_remove]
+        _save_watchlist(wl)
+        if not wl:
+            return wl, html.Div("自选列表为空，请添加标的",
+                                className="text-muted text-center mt-4"), None
+        return wl, _build_quote_table(_fetch_quote_data(wl, adj_mode)), wl[0]
+
+    # ------------------------------------------------------------------ #
+    # FR-1.3：清空自选——弹窗确认
+    # ------------------------------------------------------------------ #
+    @app.callback(
+        Output("qb-clear-modal", "is_open"),
+        Output("qb-watchlist-store", "data", allow_duplicate=True),
+        Output("qb-table-container", "children", allow_duplicate=True),
+        Output("qb-chart-symbol", "data", allow_duplicate=True),
+        Input("qb-clear-all-btn", "n_clicks"),
+        Input("qb-clear-cancel", "n_clicks"),
+        Input("qb-clear-confirm", "n_clicks"),
+        State("qb-clear-modal", "is_open"),
+        prevent_initial_call=True,
+    )
+    def on_clear_watchlist(open_clicks, cancel_clicks, confirm_clicks, is_open):
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
+        if triggered_id == "qb-clear-confirm":
+            _save_watchlist([])
+            return False, [], html.Div("自选列表为空，请添加标的",
+                                       className="text-muted text-center mt-4"), None
+        if triggered_id == "qb-clear-all-btn":
+            return True, no_update, no_update, no_update
+        return False, no_update, no_update, no_update
+
+    @app.callback(
+        # FR-2.2 / Task #25：看板分钟 K 线——按所选「分钟周期」读取 qb-chart-symbol 的分钟线。
+        # FR-2.3：使用 qb-chart-symbol 替代固定 wl[0]；移除 n_intervals（D6：分钟线盘中不变）。
+        # period 切换 / 图表标的切换时重渲染。
         Output("qb-minute-chart", "figure"),
         Input("qb-minute-period", "value"),
-        Input("qb-watchlist-store", "data"),
-        Input("qb-refresh-interval", "n_intervals"),
+        Input("qb-chart-symbol", "data"),
     )
-    def render_minute_chart(period, watchlist, n_intervals):
-        wl = list(watchlist or []) or _load_watchlist() or []
-        symbol = wl[0] if wl else None
-        if not symbol:
+    def render_minute_chart(period, chart_symbol):
+        if not chart_symbol:
             return _build_minute_chart(None, period or "5", [])
         try:
-            bars = get_data_service().get_minute_bars(symbol, period or "5")
+            bars = get_data_service().get_minute_bars(chart_symbol, period or "5")
         except Exception as e:
-            logger.warning("render_minute_chart failed %s: %s", symbol, e)
+            logger.warning("render_minute_chart failed %s: %s", chart_symbol, e)
             bars = []
-        return _build_minute_chart(symbol, period or "5", bars)
+        return _build_minute_chart(chart_symbol, period or "5", bars)
+
+    # ------------------------------------------------------------------ #
+    # FR-2.2：日 K 线渲染回调
+    # ------------------------------------------------------------------ #
+    @app.callback(
+        Output("qb-daily-chart", "figure"),
+        Input("qb-chart-symbol", "data"),
+        Input("qb-adj-mode", "value"),
+        Input("qb-daily-range", "value"),  # P1-1：时间范围选择
+    )
+    def render_daily_chart(chart_symbol, adj_mode, daily_range):
+        if not chart_symbol:
+            return _build_daily_chart(None, [], adj_mode)
+        limit = daily_range or 120
+        try:
+            bars = _fetch_daily_bars(chart_symbol, limit=limit, adj_mode=adj_mode or "none")
+        except Exception as e:
+            logger.warning("render_daily_chart failed %s: %s", chart_symbol, e)
+            bars = []
+        return _build_daily_chart(chart_symbol, bars, adj_mode or "none")
+
+
+def _build_daily_chart(symbol, bars, adj_mode="none"):
+    """构建日 K 线图：Candlestick + 成交量柱（阳红阴绿）+ MA5/MA10/MA20。
+
+    P0-1：make_subplots 双行（价格/成交量）
+    P0-2：叠加均线 Scatter trace
+    P2-1：hovermode x unified + rangeslider + 标题含口径
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                         vertical_spacing=0.05, row_heights=[0.75, 0.25])
+
+    if not symbol:
+        fig.add_annotation(text="自选为空，添加标的后可查看日K线",
+                           xref="paper", yref="paper", showarrow=False, font={"size": 13})
+        fig.update_layout(height=300, margin={"l": 30, "r": 10, "t": 30, "b": 30})
+        return fig
+    if not bars:
+        fig.add_annotation(text=f"{symbol} 暂无日线数据",
+                           xref="paper", yref="paper", showarrow=False, font={"size": 13})
+        fig.update_layout(height=300, margin={"l": 30, "r": 10, "t": 30, "b": 30})
+        return fig
+
+    dates = [str(b["trade_date"]) for b in bars]
+
+    # P0-1：Candlestick（row 1）
+    fig.add_trace(go.Candlestick(
+        x=dates,
+        open=[float(b["open"]) for b in bars],
+        high=[float(b["high"]) for b in bars],
+        low=[float(b["low"]) for b in bars],
+        close=[float(b["close"]) for b in bars],
+        name="日线",
+    ), row=1, col=1)
+
+    # P0-1：成交量柱（row 2），阳红阴绿（中国行情惯例）
+    vol_colors = ["#dc3545" if float(b["close"]) >= float(b["open"]) else "#198754"
+                  for b in bars]
+    fig.add_trace(go.Bar(
+        x=dates,
+        y=[float(b.get("volume", 0)) for b in bars],
+        marker_color=vol_colors,
+        name="成交量",
+        showlegend=False,
+    ), row=2, col=1)
+
+    # P0-2：均线（row 1）
+    ma_configs = [
+        ("MA5", "ma5", "#1e90ff"),
+        ("MA10", "ma10", "#ff8c00"),
+        ("MA20", "ma20", "#9370db"),
+    ]
+    for name, key, color in ma_configs:
+        vals = [float(b.get(key)) if b.get(key) is not None else None for b in bars]
+        if any(v is not None for v in vals):
+            fig.add_trace(go.Scatter(
+                x=dates, y=vals, mode="lines", name=name,
+                line=dict(color=color, width=1.5),
+                connectgaps=False,
+            ), row=1, col=1)
+
+    # P2-1：布局美化
+    adj_label = {"none": "不复权", "qfq": "前复权", "hfq": "后复权"}.get(adj_mode, adj_mode)
+    fig.update_layout(
+        title=f"{symbol} 日K线  |  MA5 MA10 MA20  |  {adj_label}",
+        height=400,
+        margin={"l": 40, "r": 10, "t": 50, "b": 30},
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.02, x=0.5, xanchor="center"),
+    )
+    # 网格
+    fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=1)
+    fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", row=2)
+    fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0", row=1, title_text="价格")
+    fig.update_yaxes(showgrid=True, gridcolor="#f0f0f0", row=2, title_text="成交量")
+    # rangeslider 在 row 1（subplot 模式下须指定 row）
+    fig.update_xaxes(rangeslider_visible=True, row=1)
+    return fig
+
+
+def _fetch_daily_bars(ticker, limit=120, adj_mode="none"):
+    """从 bars_daily 表读取日线数据，支持复权口径换算（FR-2.2）。
+
+    使用与 _quote_row 一致的 polars DataFrame API（df["col"][idx] 而非 df.iloc）。
+    """
+    db = _get_db()
+    df = db.query_df(
+        "SELECT trade_date, open, high, low, close, volume FROM bars_daily "
+        "WHERE ticker=? ORDER BY trade_date DESC LIMIT ?",
+        [ticker, limit])
+    n = len(df)
+    if n == 0:
+        return []
+    # 反转 DESC → ASC（plotly candlestick 要求升序）
+    bars = []
+    for i in range(n - 1, -1, -1):
+        bar = {
+            "trade_date": str(df["trade_date"][i])[:10],
+            "open": float(df["open"][i]),
+            "high": float(df["high"][i]),
+            "low": float(df["low"][i]),
+            "close": float(df["close"][i]),
+            "volume": float(df["volume"][i]) if df["volume"][i] else 0,
+        }
+        if adj_mode in ("qfq", "hfq"):
+            f = _adj_factor(db, ticker, bar["trade_date"], adj_mode)
+            if f:
+                if adj_mode == "hfq":
+                    ratio = f
+                else:
+                    # 前复权：以最新日因子归一
+                    latest = _adj_factor(db, ticker, bars[0]["trade_date"] if bars else bar["trade_date"], adj_mode)
+                    latest_f = latest if not bars else (bars[0].get("_adj_factor") or latest)
+                    ratio = f / (latest_f or 1.0)
+                    if not bars:
+                        if latest is None:
+                            ratio = 1.0
+                        else:
+                            bar["_adj_factor"] = f
+                bar["open"] = round(bar["open"] * ratio, 2)
+                bar["high"] = round(bar["high"] * ratio, 2)
+                bar["low"] = round(bar["low"] * ratio, 2)
+                bar["close"] = round(bar["close"] * ratio, 2)
+        bars.append(bar)
+    # 移除内部标记
+    for b in bars:
+        b.pop("_adj_factor", None)
+    # P0-2：预计算均线（已按 adj_mode 换算过 close）
+    closes = [b["close"] for b in bars]
+    for i, b in enumerate(bars):
+        b["ma5"] = round(sum(closes[max(0, i-4):i+1]) / min(i+1, 5), 2) if i >= 4 else None
+        b["ma10"] = round(sum(closes[max(0, i-9):i+1]) / min(i+1, 10), 2) if i >= 9 else None
+        b["ma20"] = round(sum(closes[max(0, i-19):i+1]) / min(i+1, 20), 2) if i >= 19 else None
+    return bars
 
 
 def _build_minute_chart(symbol, period, bars):

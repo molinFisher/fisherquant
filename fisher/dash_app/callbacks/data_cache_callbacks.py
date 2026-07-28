@@ -74,7 +74,7 @@ def _catalog_rows(market_filter="all", type_filter=None, text_filter="") -> list
                 "start_date": str(r.get("daily_start") or "—"),
                 "end_date": str(r.get("daily_end") or "—"),
                 # 联动 A（IC-1 / FR-3.1）：去行情看板并定位该标的
-                "add_board": f"[加入看板](/quote-board?focus={r.get('ticker', '')})",
+                "add_board": f"[加入看板](/market-watch?focus={r.get('ticker', '')})",
             }
         )
     return out
@@ -276,7 +276,7 @@ def register_data_cache_callbacks(app):
             except Exception:
                 pass
         _save_watchlist(watchlist)
-        return "/quote-board", "?focus=" + tickers[0]
+        return "/market-watch", "?focus=" + tickers[0]
 
 
 _TYPE_NAMES = {
