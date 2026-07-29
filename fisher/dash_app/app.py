@@ -1,6 +1,7 @@
 import dash
 import dash_bootstrap_components as dbc
 import logging
+import atexit
 from diskcache import Cache
 from fisher.dash_app.layout import create_layout
 from fisher.dash_app.callbacks.routing import register_all_callbacks
@@ -19,6 +20,11 @@ app.title = "FisherQuant"
 app._favicon = "favicon.svg"
 app.layout = create_layout()
 register_all_callbacks(app)
+
+# 进程退出时优雅关闭 DuckDB（flush WAL + 释放句柄），避免遗留未 checkpoint 的
+# WAL 导致下次启动主库不可读、被误判损坏而清空缓存（见 engine._rebuild_and_reconnect_locked）。
+from fisher.dash_app.services import close_db
+atexit.register(close_db)
 
 # Scheduler for background tasks
 scheduler = SchedulerEngine()

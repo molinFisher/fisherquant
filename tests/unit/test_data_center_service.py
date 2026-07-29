@@ -266,15 +266,23 @@ class TestFetchBars:
         from tests.conftest import MockAKShareDF
 
         def mock_zh_a_daily(symbol=None, start_date="", end_date="", adjust=""):
-            if adjust == "qfq_factor":
+            # akshare 1.18 行为：adjust=''/'qfq'/'hfq' 各返回含 date/close 列的序列；
+            # 不复权/前复权/后复权 三序列收盘价推导因子：
+            #   qfq_factor = raw_close / qfq_close；hfq_factor = raw_close / hfq_close
+            if adjust == "":
                 return MockAKShareDF([
-                    {"date": "2024-01-02", "qfq_factor": 1.0},
-                    {"date": "2024-01-03", "qfq_factor": 1.05},
+                    {"date": "2024-01-02", "close": 100.0},
+                    {"date": "2024-01-03", "close": 100.0},
                 ])
-            if adjust == "hfq_factor":
+            if adjust == "qfq":
                 return MockAKShareDF([
-                    {"date": "2024-01-02", "hfq_factor": 1.0},
-                    {"date": "2024-01-03", "hfq_factor": 1.20},
+                    {"date": "2024-01-02", "close": 100.0},
+                    {"date": "2024-01-03", "close": 100.0 / 1.05},
+                ])
+            if adjust == "hfq":
+                return MockAKShareDF([
+                    {"date": "2024-01-02", "close": 100.0},
+                    {"date": "2024-01-03", "close": 100.0 / 1.20},
                 ])
             return MockAKShareDF([])
 
@@ -316,12 +324,16 @@ class TestFetchBars:
         from tests.conftest import MockAKShareDF
 
         def mock_zh_a_daily(symbol=None, start_date="", end_date="", adjust=""):
-            if adjust == "qfq_factor":
-                return MockAKShareDF([{"date": "2024-01-02", "qfq_factor": 1.0},
-                                      {"date": "2024-01-03", "qfq_factor": 1.05}])
-            if adjust == "hfq_factor":
-                return MockAKShareDF([{"date": "2024-01-02", "hfq_factor": 1.0},
-                                      {"date": "2024-01-03", "hfq_factor": 1.20}])
+            # 三序列收盘价推导因子：qfq_factor = raw/qfq，hfq_factor = raw/hfq
+            if adjust == "":
+                return MockAKShareDF([{"date": "2024-01-02", "close": 100.0},
+                                      {"date": "2024-01-03", "close": 100.0}])
+            if adjust == "qfq":
+                return MockAKShareDF([{"date": "2024-01-02", "close": 100.0},
+                                      {"date": "2024-01-03", "close": 100.0 / 1.05}])
+            if adjust == "hfq":
+                return MockAKShareDF([{"date": "2024-01-02", "close": 100.0},
+                                      {"date": "2024-01-03", "close": 100.0 / 1.20}])
             return MockAKShareDF([])
         monkeypatch.setattr(ak, "stock_zh_a_daily", mock_zh_a_daily, raising=False)
 

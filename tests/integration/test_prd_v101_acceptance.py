@@ -48,10 +48,21 @@ def _mock_minute(monkeypatch, times=("2025-06-02 09:35:00", "2025-06-02 09:40:00
 
 def _mock_adj(monkeypatch):
     import akshare as ak
-    rows = [{"date": "2024-01-02", "qfq_factor": 1.0, "hfq_factor": 2.0},
-            {"date": "2024-01-03", "qfq_factor": 1.0, "hfq_factor": 2.0}]
-    monkeypatch.setattr(ak, "stock_zh_a_daily",
-                        lambda **kw: _MockDF(rows), raising=False)
+    # akshare 1.18 行为：按 adjust 返回含 date/close 列的序列；
+    # 三序列收盘价推导因子：qfq_factor = raw/qfq，hfq_factor = raw/hfq。
+    def _fake(**kw):
+        adjust = kw.get("adjust", "")
+        if adjust == "qfq":
+            rows = [{"date": "2024-01-02", "close": 10.0},
+                    {"date": "2024-01-03", "close": 10.0}]
+        elif adjust == "hfq":
+            rows = [{"date": "2024-01-02", "close": 5.0},
+                    {"date": "2024-01-03", "close": 5.0}]
+        else:  # adjust == ""（不复权）
+            rows = [{"date": "2024-01-02", "close": 10.0},
+                    {"date": "2024-01-03", "close": 10.0}]
+        return _MockDF(rows)
+    monkeypatch.setattr(ak, "stock_zh_a_daily", _fake, raising=False)
 
 
 def _record(db, ticker, **kw):

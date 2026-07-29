@@ -144,10 +144,13 @@ class DuckDBManager:
     def _rebuild_and_reconnect_locked(self, path: str):
         """在持锁状态下从 WAL 损坏中恢复，尽量保留已提交数据（PRD §16.13 损坏自恢复）。
 
-        绝大多数 WAL 损坏发生在未提交 / checkpoint 边缘，主库文件本身一致。
-        因此优先「仅丢弃损坏的 WAL、保留主库文件」重新打开；仅当主库文件
-        本身也打不开时才回退到旧的「备份主库并建空库」行为。这样可避免每次
-        重启因残留损坏 WAL 而清空全部缓存与标的字典（曾导致搜索无结果）。
+        核心约束：**绝不自动清空缓存**。历史上策略 2 会把主库 move 到 .corrupt 并
+        新建空库，导致每次重启因残留损坏 WAL 而清空全部缓存与标的字典（累计 9 次
+        .corrupt 备份）。现改为：
+          - 策略 1：仅丢弃损坏的 WAL、保留主库文件重新打开（保留已提交数据）。
+          - 策略 2：主库本身不可读时，**保留原文件、抛出异常**，由上层告警——
+            绝不 move/删除主库、绝不建空库。已提交数据不丢，运维可从 .corrupt
+            历史备份手动恢复。
         """
         wal_path = f"{path}.wal"
         # 策略 1：丢弃损坏 WAL，保留主库已提交数据
@@ -162,20 +165,25 @@ class DuckDBManager:
                 logger.info("已丢弃损坏 WAL 并以主库文件恢复连接（保留已提交数据）")
                 return
             except Exception as e:
-                logger.warning("丢弃 WAL 后仍无法打开主库，回退备份重建: %s", e)
-        # 策略 2（兜底）：主库也损坏 → 备份并建空库（原行为）
-        corrupt_backup = f"{path}.corrupt.{int(time.time() * 1000)}"
+                logger.warning("丢弃 WAL 后仍无法以读写方式打开主库: %s", e)
+        # 策略 2：主库本身不可读——严禁自动建空库清空缓存！
+        # 先用只读方式确认是否真损坏；无论结果都保留原文件，抛出异常交由上层告警。
         try:
-            if os.path.exists(path):
-                shutil.move(path, corrupt_backup)
-                logger.info("损坏的 DuckDB 已备份至 %s", corrupt_backup)
-        except OSError:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except OSError:
-                pass
-        self._write_conn = duckdb.connect(path)
+            probe = duckdb.connect(path, read_only=True)
+            probe.execute("SELECT 1")
+            probe.close()
+            # 只读可开但读写失败（权限/残留锁等）：再试一次读写连接
+            self._write_conn = duckdb.connect(path)
+            self._write_conn.execute("SELECT 1")
+            logger.info("主库以读写方式恢复连接（保留已提交数据）")
+            return
+        except Exception as e:
+            logger.error(
+                "DuckDB 主库无法打开，拒绝重建空库以免清空缓存；原文件已保留: %s | %s",
+                path, e)
+            raise RuntimeError(
+                f"DuckDB 主库损坏且无法在本进程恢复，已保留原文件（未清空缓存）：{path}"
+            ) from e
 
     @property
     def write_connection(self) -> duckdb.DuckDBPyConnection:
@@ -192,16 +200,22 @@ class DuckDBManager:
             self._write_conn.executemany(sql, params_list)
 
     def query_df(self, sql: str, params: list | None = None) -> pl.DataFrame:
-        # 每次查询使用独立临时连接并立即关闭，避免读连接持有快照阻塞写连接
-        # （DuckDB：读连接未释放快照时会阻塞同一库的写入，导致死锁）。
-        conn = duckdb.connect(self._path)
+        # 复用读连接池（连接数有界 = 1 写 + read_pool_size 读），不再每次查询新建
+        # 独立句柄。历史上 query_df 每次 duckdb.connect(path) 新建句柄，叠加单写连接
+        # 形成「多句柄并发写同一文件」，易引发 WAL/文件损坏，重启时主库不可读进而被
+        # 误判损坏并清空缓存（累计 9 次 .corrupt 备份）。复用连接池消除该隐患。
+        conn = self._acquire_read()
         try:
             return conn.sql(sql, params=params or []).pl()
         finally:
             try:
-                conn.close()
+                self._read_pool.put(conn)
             except Exception:
-                pass
+                # 放回失败（连接异常）则丢弃，避免污染连接池
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     @contextmanager
     def transaction(self):

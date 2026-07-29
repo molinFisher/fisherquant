@@ -65,6 +65,21 @@ def get_cache_catalog_service() -> "CacheCatalogService":
     return _cache_catalog_service_instance
 
 
+def close_db() -> None:
+    """优雅关闭：flush WAL 并释放 DuckDB 句柄（checkpoint 在 close 内完成）。
+
+    在进程退出（Ctrl+C / 正常退出）时由 atexit 调用，避免遗留未 checkpoint 的
+    WAL 导致下次启动主库不可读、进而被误判损坏。绝不在此清空数据。
+    """
+    global _db_instance
+    if _db_instance is not None:
+        try:
+            _db_instance.close()
+        except Exception:
+            pass
+        _db_instance = None
+
+
 def get_strategy_service(strategies_dir: str | None = None):
     global _strategy_service_instance
     if _strategy_service_instance is None:

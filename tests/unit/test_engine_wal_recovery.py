@@ -1,11 +1,12 @@
-"""DuckDB WAL 损坏自恢复回归测试（PRD §16.13）。
+"""DuckDB WAL / 主库损坏自恢复回归测试（PRD §16.13）。
 
-验证 engine.DuckDBManager 在 WAL 文件损坏时：
+验证 engine.DuckDBManager 在文件损坏时：
 - 策略 1：仅丢弃损坏 WAL、保留主库已提交数据（不丢缓存 / 标的字典）；
-- 策略 2（兜底）：主库本身也损坏时才备份主库并建空库，且不抛异常。
+- 策略 2（兜底）：主库本身也损坏时**拒绝重建空库**（抛 RuntimeError 并原地保留
+  原文件），绝不静默清空缓存。
 
-修复前的行为是「无论 WAL 还是主库损坏都直接备份主库建空库」，
-曾导致一次重启清空全部缓存与 symbol_dict，搜索无结果。
+修复前的行为是「无论 WAL 还是主库损坏都直接把主库挪成 .corrupt 并建空库」，
+曾累计 9 次重启清空全部缓存与 symbol_dict，搜索无结果。
 """
 import os
 import tempfile
@@ -99,8 +100,12 @@ def test_lock_conflict_never_rebuilds(monkeypatch):
     con.close()
 
 
-def test_main_corruption_falls_back_to_empty_rebuild():
-    """主库本身损坏 → 兜底备份主库并建空库，且不抛异常。"""
+def test_main_corruption_raises_without_wiping():
+    """主库本身损坏 → 拒绝重建空库以免清空缓存：抛异常且原文件原地保留、不产生 .corrupt 备份。
+
+    修复前：主库损坏会被挪成 .corrupt 并新建空库，清空全部缓存与标的字典。
+    现改为保留原文件并抛出 RuntimeError，由运维从 .corrupt 历史备份手动恢复。
+    """
     tmp = tempfile.mkdtemp()
     db_path = os.path.join(tmp, "fallback.db")
     _make_good_db(db_path)
@@ -112,10 +117,18 @@ def test_main_corruption_falls_back_to_empty_rebuild():
         f.write(b"more garbage")
 
     _reset_singleton()
-    mgr = DuckDBManager(db_path)
-    mgr.connect(db_path)  # 不应抛异常
-    # 空库重建后连接可用（symbol_dict 可能不存在，确认不崩溃即可）
-    ok = mgr.execute("SELECT 1").fetchone()[0]
-    assert ok == 1
-    mgr.close()
+    import pytest
+
+    with pytest.raises(RuntimeError) as ei:
+        mgr = DuckDBManager(db_path)
+        mgr.connect(db_path)  # 应抛 RuntimeError，绝不静默建空库
+    assert "未清空缓存" in str(ei.value) or "保留" in str(ei.value)
+
+    # 原文件原地保留、内容未变，且未产生 .corrupt 备份
+    assert os.path.exists(db_path), "主库文件被挪走了！"
+    with open(db_path, "rb") as f:
+        assert f.read() == b"CORRUPT MAIN FILE"
+    siblings = os.listdir(tmp)
+    assert not any(".corrupt." in s for s in siblings), \
+        f"主库损坏不应产生 corrupt 备份（应保留原文件）：{siblings}"
     _reset_singleton()

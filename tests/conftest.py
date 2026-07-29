@@ -270,7 +270,13 @@ def mock_akshare(monkeypatch):
         return MockAKShareDF(mock_bars)
 
     def mock_financial_abstract(symbol=""):
-        return MockAKShareDF([{"报告期": "2024-12-31", "营业收入": 100000000}])
+        # akshare 1.18 宽表：首两列「选项」「指标」，其余为报告期 YYYYMMDD 列
+        return MockAKShareDF([
+            {"选项": "常用指标", "指标": "营业收入",
+             "20241231": 100000000.0, "20240331": 90000000.0},
+            {"选项": "常用指标", "指标": "归母净利润",
+             "20241231": 50000000.0, "20240331": 45000000.0},
+        ])
 
     def mock_stock_hk_spot(*args, **kwargs):
         return MockAKShareDF([

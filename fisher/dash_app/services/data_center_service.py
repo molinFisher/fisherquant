@@ -387,36 +387,42 @@ class DataCenterService:
         """将 stock_financial_abstract 的宽表归一化为 v5 financials 行
         (ticker, report_date, report_type, indicator, value, unit)。
         返回 (rows, 最新报告期)；解析不到则返回 ([], None)。
+
+        akshare 1.18 返回**宽表**：首两列为「选项」(分组) / 「指标」(指标名)，
+        其余列均为报告期（YYYYMMDD，如 20260331），单元格为该期数值。即指标为行、
+        日期为列。旧逻辑把「选项」误当日期列，导致全部行被跳过 → 误报「无财务数据」。
+        此处按日期列（8 位纯数字）转置为 (ticker, report_date, indicator, value)。
         """
         import math
+        import re
+
         try:
             cols = list(df.columns)
         except Exception:
             return [], None
-        date_col = None
-        for c in cols:
-            if "期" in str(c) or "日期" in str(c):
-                date_col = c
-                break
-        if date_col is None and cols:
-            date_col = cols[0]
-        if date_col is None:
+        date_re = re.compile(r"^\d{8}$")
+        date_cols = [c for c in cols if isinstance(c, str) and date_re.match(str(c).strip())]
+        if not date_cols:
             return [], None
-        indicator_cols = [c for c in cols if c != date_col]
-        rows: list[list] = []
+        # 指标名列：优先「指标」，否则退路取第二列
+        indicator_col = None
+        for cand in ("指标", "指标名称", "报告项目"):
+            if cand in cols:
+                indicator_col = cand
+                break
+        if indicator_col is None:
+            indicator_col = cols[1] if len(cols) > 1 else cols[0]
+        # 按 (report_date, indicator) 去重，避免不同分组下同名指标触发主键冲突
+        seen: dict[tuple[str, str], list] = {}
         fin_end: str | None = None
         for _, r in df.iterrows():
-            try:
-                rd = str(r[date_col])[:10]
-            except Exception:
+            ind = str(r[indicator_col]).strip() if indicator_col in df.columns else ""
+            if not ind:
                 continue
-            if not rd or len(rd) < 10:
-                continue
-            rt = DataCenterService._report_type(rd)
-            if fin_end is None or rd > fin_end:
-                fin_end = rd
-            for ic in indicator_cols:
-                val = r[ic]
+            for dc in date_cols:
+                raw = str(dc).strip()
+                rd = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+                val = r[dc]
                 if val is None:
                     continue
                 try:
@@ -425,8 +431,11 @@ class DataCenterService:
                     v = float(val)
                 except (ValueError, TypeError):
                     continue
-                rows.append([ticker, rd, rt, str(ic), v, None])
-        return rows, fin_end
+                rt = DataCenterService._report_type(rd)
+                if fin_end is None or rd > fin_end:
+                    fin_end = rd
+                seen[(rd, ind)] = [ticker, rd, rt, ind, v, None]
+        return list(seen.values()), fin_end
 
     def fetch_bars(self, symbols: list[str], start: str, end: str,
                    data_type: str = "daily", period: str = "",
@@ -577,7 +586,12 @@ class DataCenterService:
                                             "error": "无财务数据"}
                     elif data_type == "adj":
                         # FR-2.4（Task #21）：复权因子入库。A 股仅——由 stock_zh_a_daily
-                        # 的 qfq_factor / hfq_factor 因子序列回填 adj_factors（PK ticker,trade_date,adj_type）。
+                        # 的收盘价序列推导 qfq/hfq 因子回填 adj_factors
+                        # （PK ticker,trade_date,adj_type）。
+                        # 注意：akshare 1.18 已不支持 adjust='qfq_factor'/'hfq_factor'
+                        # （返回空 DataFrame），故改为取 不复权/前复权/后复权 三序列，
+                        # 由收盘价推导：qfq_factor = raw_close / qfq_close；
+                        #              hfq_factor = raw_close / hfq_close。
                         # 港股无复权因子口径，直接失败（与财务同策略）。
                         if is_hk:
                             results[sym] = {"status": "failed", "reason": "unsupported",
@@ -585,31 +599,66 @@ class DataCenterService:
                             continue
                         ticker = resolve_ticker(code, "a_share")
                         exch = "sh" if code.startswith(("6", "5", "9")) else "sz"
-                        adj_rows = []
-                        adj_fetched = False
-                        for adj_type, factor_col in (("qfq", "qfq_factor"),
-                                                     ("hfq", "hfq_factor")):
-                            try:
-                                df = _retry_fetch(lambda: ak.stock_zh_a_daily(
-                                    symbol=f"{exch}{code}", start_date=start_compact,
-                                    end_date=end_compact, adjust=f"{adj_type}_factor"),
-                                    limiter=self._limiter)
-                            except Exception:
-                                df = None
+
+                        def _close_map(df):
+                            m: dict[str, float] = {}
                             if df is None or (hasattr(df, "empty") and df.empty):
-                                continue
-                            adj_fetched = True
+                                return m
                             for _, r in df.iterrows():
                                 d = r["date"]
                                 ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
                                       else str(d)[:10])
-                                if (start and ds < start) or (end and ds > end):
-                                    continue
-                                adj_rows.append([ticker, ds, adj_type,
-                                                 float(r[factor_col])])
-                        if not adj_fetched or not adj_rows:
-                            results[sym] = {"status": "failed",
-                                            "reason": "no_data",
+                                try:
+                                    m[ds] = float(r["close"])
+                                except Exception:
+                                    pass
+                            return m
+
+                        try:
+                            df_raw = _retry_fetch(
+                                lambda: ak.stock_zh_a_daily(
+                                    symbol=f"{exch}{code}", start_date=start_compact,
+                                    end_date=end_compact, adjust=""),
+                                limiter=self._limiter)
+                        except Exception:
+                            df_raw = None
+                        if df_raw is None or (hasattr(df_raw, "empty") and df_raw.empty):
+                            results[sym] = {"status": "failed", "reason": "no_data",
+                                            "error": "该区间无复权因子数据"}
+                            continue
+                        try:
+                            df_qfq = _retry_fetch(
+                                lambda: ak.stock_zh_a_daily(
+                                    symbol=f"{exch}{code}", start_date=start_compact,
+                                    end_date=end_compact, adjust="qfq"),
+                                limiter=self._limiter)
+                        except Exception:
+                            df_qfq = None
+                        try:
+                            df_hfq = _retry_fetch(
+                                lambda: ak.stock_zh_a_daily(
+                                    symbol=f"{exch}{code}", start_date=start_compact,
+                                    end_date=end_compact, adjust="hfq"),
+                                limiter=self._limiter)
+                        except Exception:
+                            df_hfq = None
+
+                        raw_m = _close_map(df_raw)
+                        qfq_m = _close_map(df_qfq)
+                        hfq_m = _close_map(df_hfq)
+
+                        adj_rows = []
+                        for ds, raw_close in raw_m.items():
+                            if (start and ds < start) or (end and ds > end):
+                                continue
+                            q = qfq_m.get(ds)
+                            h = hfq_m.get(ds)
+                            if q and q != 0:
+                                adj_rows.append([ticker, ds, "qfq", raw_close / q])
+                            if h and h != 0:
+                                adj_rows.append([ticker, ds, "hfq", raw_close / h])
+                        if not adj_rows:
+                            results[sym] = {"status": "failed", "reason": "no_data",
                                             "error": "该区间无复权因子数据"}
                             continue
                         with self._db.transaction() as conn:
