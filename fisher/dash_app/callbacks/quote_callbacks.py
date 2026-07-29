@@ -253,7 +253,7 @@ def _quote_row(sym, snap, cov, adj_mode="none", name_map=None):
         "coverage": _coverage_badges(cov),
         "realtime_status": realtime_status,
         "daily_fallback": daily_fallback,
-        "goto_cache": f"[去缓存](/data-center?tab=tab-cached&focus={sym})",
+        "goto_cache": _goto_cache_link(sym),
     }
 
 
@@ -266,8 +266,14 @@ def _empty_row(sym, cov, name_map=None):
         "change_raw": 0.0, "coverage": _coverage_badges(cov),
         "realtime_status": '<span style="color:#c8ccd0" title="无数据">—</span>',
         "daily_fallback": True,
-        "goto_cache": f"[去缓存](/data-center?tab=tab-cached&focus={sym})",
+        "goto_cache": _goto_cache_link(sym),
     }
+
+
+def _goto_cache_link(sym, data_type="daily"):
+    """行情看板行内「去补齐」链接（FR-2）：落到获取数据页并携带 focus，
+    由数据中心 consume_cache_intent 消费预填待缓存池（不再带无效的 tab=tab-cached）。"""
+    return f"[去补齐](/data-center?focus={sym}&data_type={data_type})"
 
 
 def _fetch_quote_data(symbols, adj_mode="none"):
@@ -534,10 +540,15 @@ def register_quote_callbacks(app):
         prevent_initial_call=True,
     )
     def batch_goto_cache(n_clicks):
-        """FR-4.3：一键批量去缓存——跳转目录页补齐缺失类型。"""
+        """FR-2（行情看板体验优化）：一键批量去缓存——携带全部自选标的跳转获取数据页
+        预填待缓存池（consume_cache_intent 消费），上限 20 个。"""
         if not n_clicks:
             return no_update, no_update
-        return "/data-center", "?tab=tab-cached"
+        wl = _load_watchlist() or []
+        if not wl:
+            return no_update, no_update
+        symbols = ",".join(wl[:20])
+        return "/data-center", f"?symbols={symbols}"
 
     @app.callback(
         # FR-5.3 / T-4：导航到行情看板即清理死标并即时渲染（首次加载也生效，无空白死行）
@@ -729,16 +740,27 @@ def register_quote_callbacks(app):
         Input("qb-chart-symbol", "data"),
         Input("qb-adj-mode", "value"),
         Input("qb-daily-range", "value"),  # P1-1：时间范围选择
+        Input("qb-daily-date-range", "start_date"),  # FR-3：自定义起止日期
+        Input("qb-daily-date-range", "end_date"),
     )
-    def render_daily_chart(chart_symbol, adj_mode, daily_range):
+    def render_daily_chart(chart_symbol, adj_mode, daily_range, custom_start, custom_end):
         if not chart_symbol:
             return _build_daily_chart(None, [], adj_mode)
-        limit = daily_range or 120
-        try:
-            bars = _fetch_daily_bars(chart_symbol, limit=limit, adj_mode=adj_mode or "none")
-        except Exception as e:
-            logger.warning("render_daily_chart failed %s: %s", chart_symbol, e)
-            bars = []
+        if daily_range == "custom" and custom_start and custom_end:
+            # FR-3（行情看板体验优化）：自定义时间段——按 trade_date 区间过滤
+            try:
+                bars = _fetch_daily_bars(chart_symbol, adj_mode=adj_mode or "none",
+                                         start=custom_start, end=custom_end)
+            except Exception as e:
+                logger.warning("render_daily_chart(custom) failed %s: %s", chart_symbol, e)
+                bars = []
+        else:
+            limit = daily_range if isinstance(daily_range, int) else 120
+            try:
+                bars = _fetch_daily_bars(chart_symbol, limit=limit, adj_mode=adj_mode or "none")
+            except Exception as e:
+                logger.warning("render_daily_chart failed %s: %s", chart_symbol, e)
+                bars = []
         return _build_daily_chart(chart_symbol, bars, adj_mode or "none")
 
 
@@ -823,22 +845,33 @@ def _build_daily_chart(symbol, bars, adj_mode="none"):
     return fig
 
 
-def _fetch_daily_bars(ticker, limit=120, adj_mode="none"):
+def _fetch_daily_bars(ticker, limit=120, adj_mode="none", start=None, end=None):
     """从 bars_daily 表读取日线数据，支持复权口径换算（FR-2.2）。
 
     使用与 _quote_row 一致的 polars DataFrame API（df["col"][idx] 而非 df.iloc）。
     """
     db = _get_db()
-    df = db.query_df(
-        "SELECT trade_date, open, high, low, close, volume FROM bars_daily "
-        "WHERE ticker=? ORDER BY trade_date DESC LIMIT ?",
-        [ticker, limit])
+    if start and end:
+        # FR-3（行情看板体验优化）：自定义时间段——按 trade_date 区间过滤（升序直接可用）
+        df = db.query_df(
+            "SELECT trade_date, open, high, low, close, volume FROM bars_daily "
+            "WHERE ticker=? AND trade_date >= ? AND trade_date <= ? "
+            "ORDER BY trade_date ASC",
+            [ticker, start, end])
+        ascending = True
+    else:
+        df = db.query_df(
+            "SELECT trade_date, open, high, low, close, volume FROM bars_daily "
+            "WHERE ticker=? ORDER BY trade_date DESC LIMIT ?",
+            [ticker, limit])
+        ascending = False
     n = len(df)
     if n == 0:
         return []
-    # 反转 DESC → ASC（plotly candlestick 要求升序）
+    # 自定义区间为升序，固定档为 DESC 需反转（plotly candlestick 要求升序）
     bars = []
-    for i in range(n - 1, -1, -1):
+    idx_range = range(n) if ascending else range(n - 1, -1, -1)
+    for i in idx_range:
         bar = {
             "trade_date": str(df["trade_date"][i])[:10],
             "open": float(df["open"][i]),
@@ -911,7 +944,11 @@ def _build_minute_chart(symbol, period, bars):
         height=320,
         margin={"l": 40, "r": 10, "t": 40, "b": 30},
         xaxis_rangeslider_visible=False,
+        hovermode="x unified",
     )
+    # FR-1（行情看板体验优化）：隐藏 A 股/港股每日午休（11:30–13:00）空白带，
+    # 交易时段连续展示，避免大段断裂影响观感。
+    fig.update_xaxes(rangebreaks=[dict(bounds=["11:30", "13:00"])])
     return fig
 
 

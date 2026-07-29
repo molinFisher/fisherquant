@@ -201,7 +201,10 @@ class TestAC06LinkageGotoCache:
     def test_ac06_goto_cache_link_format(self):
         import fisher.dash_app.callbacks.quote_callbacks as qc
         r = qc._empty_row(T, None)
-        assert f"/data-center?tab=tab-cached&focus={T}" in r["goto_cache"]
+        # FR-2（行情看板体验优化）：链接文案改为「去补齐」，携带 focus + data_type=daily，
+        # 落到数据查询页由 consume_cache_intent 预填待缓存池（不再带无效的 tab=tab-cached）。
+        assert "去补齐" in r["goto_cache"]
+        assert f"/data-center?focus={T}&data_type=daily" in r["goto_cache"]
 
 
 # --------------------------------------------------------------------------- #

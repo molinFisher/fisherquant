@@ -136,6 +136,8 @@ def _create_query_tab():
                                     html.Div(id="fetch-guard-hint",
                                              className="text-muted small mt-1"),
                                     html.Div(id="fetch-status", className="mt-2"),
+                                    # FR-2（行情看板体验优化）：从看板带入标的后的提示
+                                    html.Div(id="cache-intent-hint", className="mt-2 small text-info"),
                                 ]
                             ),
                         ]

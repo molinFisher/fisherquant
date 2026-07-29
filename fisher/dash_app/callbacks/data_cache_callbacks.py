@@ -15,7 +15,7 @@ V1.4 起目录页数据源由 bars_daily 聚合切换为 cache_catalog（v_cache
 
 from dash import Input, Output, State, callback, no_update, html, dash_table
 
-from fisher.dash_app.services import get_data_service, get_cache_catalog_service
+from fisher.dash_app.services import get_data_service, get_cache_catalog_service, get_db
 
 # 覆盖度徽标：列名缩写 -> (has_* 字段, 类型全名)。U-1：日/分/实/复/财 五类（Task #24）。
 _BADGES = [
@@ -224,8 +224,8 @@ def register_data_cache_callbacks(app):
     @app.callback(
         # 联动 B（IC-2 / U-2）：看板跳转过来时预置筛选并激活「已缓存」tab，消费后清空 ?focus=
         Output("cache-filter-input", "value"),
-        Output("data-center-tabs", "active_tab"),
-        Output("url", "search"),
+        Output("data-center-tabs", "active_tab", allow_duplicate=True),
+        Output("url", "search", allow_duplicate=True),
         Input("url", "search"),
         State("url", "pathname"),
         prevent_initial_call=True,
@@ -241,6 +241,20 @@ def register_data_cache_callbacks(app):
             return no_update, no_update, no_update
         # 预置筛选 + 激活 tab；清空 focus 避免手动刷新反复置顶（U-2）
         return focus, "tab-cached", "?tab=tab-cached"
+
+    # FR-2（行情看板体验优化）：行情看板「去补齐 / 批量补齐」跳转过来时，
+    # 预填待缓存池 selected-symbols-store 并在 cache-intent-hint 提示。
+    # 数据中心默认 Tab 即「数据查询」(tab-query)，无需再驱动 active_tab；
+    # 为避免与 consume_focus / batch_add_to_board 共享输出引发回调捕获冲突，
+    # 不写 url.search / active_tab（参数保留在 URL 中幂等，刷新无害）。
+    app.callback(
+        Output("selected-symbols-store", "data", allow_duplicate=True),
+        Output("cache-intent-hint", "children", allow_duplicate=True),
+        Input("url", "search"),
+        State("url", "pathname"),
+        State("selected-symbols-store", "data"),
+        prevent_initial_call=True,
+    )(consume_cache_intent)
 
     @app.callback(
         # 联动 A（IC-1 / FR-3.1）：批量把当前筛选结果加入行情看板自选 +
@@ -321,3 +335,48 @@ def _empty_cached_table():
             html.P('请先在"数据查询"标签页中搜索并获取数据', className="text-muted text-center"),
         ]
     )
+
+
+def consume_cache_intent(search, pathname, existing_pool):
+    """FR-2（行情看板体验优化）：行情看板「去补齐 / 批量补齐」跳转过来时，
+    预填待缓存池 selected-symbols-store（与现有勾选合并去重），并在 cache-intent-hint 提示。
+
+    注：数据中心默认 Tab 即「数据查询」(tab-query)，故无需回调驱动 active_tab；
+    为避免与 consume_focus / batch_add_to_board 共享 url.search / active_tab 输出导致
+    回调捕获歧义，本回调仅写 selected-symbols-store 与 cache-intent-hint。
+    """
+    from urllib.parse import parse_qs
+    if not search or pathname != "/data-center":
+        return no_update, no_update
+    q = parse_qs(search.lstrip("?"))
+    tab = (q.get("tab") or [None])[0]
+    # 已缓存筛选场景（tab=tab-cached）由 consume_focus 处理
+    if tab == "tab-cached":
+        return no_update, no_update
+    focus = (q.get("focus") or [None])[0]
+    symbols_raw = q.get("symbols")
+    tickers = []
+    if focus:
+        tickers = [focus]
+    elif symbols_raw:
+        tickers = [s for s in symbols_raw[0].split(",") if s][:20]
+    if not tickers:
+        return no_update, no_update
+    name_map = {}
+    try:
+        db = get_db()
+        ph = ",".join("?" for _ in tickers)
+        df = db.query_df(
+            f"SELECT ticker, name FROM symbol_dict WHERE ticker IN ({ph})",
+            list(tickers))
+        for r in df.to_dicts():
+            name_map[r["ticker"]] = r["name"]
+    except Exception:
+        pass
+    existing = {p["value"]: p for p in (existing_pool or []) if isinstance(p, dict)}
+    for t in tickers:
+        if t not in existing:
+            existing[t] = {"value": t, "label": name_map.get(t) or t}
+    pool = list(existing.values())
+    return (pool,
+            f"已从行情看板带入 {len(tickers)} 个标的，选择数据类型后点击「开始获取数据」补齐。")

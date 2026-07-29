@@ -133,7 +133,7 @@ def register_data_callbacks(app):
                 html.Span(status_children), matches)
 
     @app.callback(
-        Output("selected-symbols-store", "data"),
+        Output("selected-symbols-store", "data", allow_duplicate=True),
         Output("candidate-list", "value"),
         Input("candidate-list", "value"),
         Input("candidate-select-all-btn", "n_clicks"),

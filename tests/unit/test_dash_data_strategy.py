@@ -577,7 +577,7 @@ class TestDataCacheCallbacks:
                             str(tmp_path / "watchlist.json"))
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
-            cb = _nth(app, 6)
+            cb = _nth(app, 7)
         # 无点击 → 不动作
         assert cb(None, "all", [], "") == (no_update, no_update)
         # 点击 → 写自选 + 置 auto_load_enabled + 跳转看板定位首标
@@ -599,7 +599,7 @@ class TestDataCacheCallbacks:
                             lambda: fake)
         with capture_dash_callbacks() as app:
             data_cache_callbacks.register_data_cache_callbacks(app)
-            cb = _nth(app, 6)
+            cb = _nth(app, 7)
         assert cb(1, "all", [], "") == (no_update, no_update)
 
 
@@ -787,7 +787,7 @@ class TestQuoteCallbacks:
         assert tbl.data == data
 
     def test_fetch_quote_data_goto_cache_link(self, monkeypatch):
-        """FR-4.2 / IC-2：每行带去缓存跳转链接，锚向 ?tab=tab-cached&focus=<ticker>。"""
+        """FR-2（行情看板体验优化）：行内「去补齐」链接落获取数据页并携带 focus。"""
         db = FakeDuckDB(quote_rows=[
             {"close": 110.0, "volume": 1000, "trade_date": "2024-01-03"},
             {"close": 100.0, "volume": 2000, "trade_date": "2024-01-02"},
@@ -796,12 +796,12 @@ class TestQuoteCallbacks:
                             lambda *a, **k: db)
         data = quote_callbacks._fetch_quote_data(["600519.SZ"])
         assert data[0]["goto_cache"] == (
-            "[去缓存](/data-center?tab=tab-cached&focus=600519.SZ)")
+            "[去补齐](/data-center?focus=600519.SZ&data_type=daily)")
 
     def test_build_quote_table_goto_column(self):
         data = [{"code": "600519", "name": "600519", "last_price": "110.00",
                  "change_pct": "+1.00%", "volume": "1,000", "change_raw": 1.0,
-                 "goto_cache": "[去缓存](/data-center?tab=tab-cached&focus=600519)"}]
+                 "goto_cache": "[去补齐](/data-center?focus=600519&data_type=daily)"}]
         tbl = quote_callbacks._build_quote_table(data)
         goto_col = next(c for c in tbl.columns if c["id"] == "goto_cache")
         assert goto_col["presentation"] == "markdown"
