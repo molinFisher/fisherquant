@@ -1,3 +1,4 @@
+import datetime
 import dash_bootstrap_components as dbc
 from dash import html, dcc, dash_table, Input, Output, State, callback, no_update, ctx
 import logging
@@ -83,7 +84,7 @@ def _create_query_tab():
                                     dcc.DatePickerRange(
                                         id="date-range-picker",
                                         start_date="2024-01-01",
-                                        end_date="2024-12-31",
+                                        end_date=datetime.date.today().isoformat(),
                                         display_format="YYYY-MM-DD",
                                     ),
                                     dbc.Button(
