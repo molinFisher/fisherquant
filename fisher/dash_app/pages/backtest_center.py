@@ -304,6 +304,14 @@ def _create_config_panel():
                         end_date="2025-06-30",
                         display_format="YYYY-MM-DD",
                     ),
+                    dbc.Button(
+                        "使用缓存区间",
+                        id="bt-use-cache-range-btn",
+                        color="outline-info",
+                        size="sm",
+                        className="mt-2",
+                    ),
+                    html.Div(id="bt-range-warning", className="mt-1"),
                     dbc.Row(
                         [
                             dbc.Col(

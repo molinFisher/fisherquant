@@ -267,7 +267,23 @@ def register_strategy_wizard_callbacks(app):
     )
     def load_symbol_pool_options(is_open):
         if is_open:
-            return _get_cached_symbols()
+            try:
+                from fisher.dash_app.services import get_cache_catalog_service
+                cat = get_cache_catalog_service().get_cache_catalog()
+                opts = []
+                for r in cat:
+                    t = r["ticker"]
+                    daily = "✓" if r.get("has_daily") else "✗"
+                    adj = "✓" if r.get("has_adj") else "✗"
+                    fin = "✓" if r.get("has_financials") else "✗"
+                    opts.append({
+                        "label": f"{t}  [日{daily} 复{adj} 财{fin}]",
+                        "value": t,
+                    })
+                return opts
+            except Exception as e:
+                logger.warning("Load symbol pool options failed: %s", e)
+                return []
         return []
 
     @app.callback(

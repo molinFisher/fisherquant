@@ -15,6 +15,7 @@ import polars as pl
 import pytest
 
 from fisher.dash_app.callbacks import backtest_callbacks as bc
+from fisher.dash_app.services.strategy_data_service import ReadinessReport
 from tests.helpers.dash_harness import capture_dash_callbacks, FakeDashApp
 
 
@@ -242,6 +243,13 @@ def spied_backtest(monkeypatch):
 
     monkeypatch.setattr(bc, "_load_bars", fake_load_bars)
     monkeypatch.setattr(bc, "_get_cached_symbols", fake_symbols)
+    # 数据就绪校验 / 复权注入：单测中降级为就绪 + 直接回传假 bars（绕过真实 DB）
+    monkeypatch.setattr(
+        bc, "_readiness_report",
+        lambda strategy_config, start_date, end_date, symbols: ReadinessReport(
+            ready=True, blocking=False, missing=[], symbols=symbols or [], requires_financials=False),
+    )
+    monkeypatch.setattr(bc, "_load_adjusted_bars", fake_load_bars)
     monkeypatch.setattr(bc, "_default_risk_engine", lambda *a, **k: _RISK_SENTINEL)
     monkeypatch.setattr(bc, "BacktestSerializer", _FakeSerializer)
     monkeypatch.setattr(bc, "PaperEngine", _SpyPaper)

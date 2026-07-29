@@ -12,6 +12,7 @@ _data_service_instance = None
 _auto_load_service_instance = None
 _strategy_service_instance = None
 _cache_catalog_service_instance = None
+_strategy_data_service_instance = None
 
 
 def get_db() -> DuckDBManager:
@@ -87,3 +88,14 @@ def get_strategy_service(strategies_dir: str | None = None):
         base_dir = strategies_dir or str(Path("./strategies").resolve())
         _strategy_service_instance = StrategyService(base_dir)
     return _strategy_service_instance
+
+
+def get_strategy_data_service() -> "StrategyDataService":
+    """策略中心 × 缓存数据联动服务（数据就绪校验 + 复权注入 + 缓存区间）。"""
+    global _strategy_data_service_instance
+    if _strategy_data_service_instance is None:
+        from .strategy_data_service import StrategyDataService
+        _strategy_data_service_instance = StrategyDataService(
+            get_cache_catalog_service(), get_db()
+        )
+    return _strategy_data_service_instance

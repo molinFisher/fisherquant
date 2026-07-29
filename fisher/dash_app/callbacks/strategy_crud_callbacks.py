@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 from fisher.dash_app.services import get_strategy_service
 from fisher.dash_app.services.models import StrategyConfig
+from fisher.dash_app.services.strategy_data_service import ReadinessReport
 
 TYPE_LABELS = {
     "sma_cross": "均线交叉",
@@ -22,6 +23,33 @@ TYPE_LABELS = {
 }
 
 
+def _compute_readiness_map(strategies):
+    """逐策略计算数据就绪状态（列表列用）。宽区间：仅看覆盖度，不判越界。"""
+    try:
+        from fisher.dash_app.services import get_strategy_data_service
+        sds = get_strategy_data_service()
+    except Exception:
+        return {}
+    out = {}
+    for s in strategies:
+        try:
+            rep = sds.check_data_readiness(s, "1970-01-01", "2099-12-31", s.get("symbols"))
+        except Exception:
+            rep = ReadinessReport(ready=True, blocking=False, missing=[], symbols=[], requires_financials=False)
+        out[s.get("name", "")] = (rep.status, rep.missing)
+    return out
+
+
+def _readiness_badge(status, missing):
+    if status == "ready":
+        return dbc.Badge("✓ 可回测", color="success", className="small")
+    if status == "blocked":
+        txt = "缺：" + "、".join(m.symbol for m in missing) if missing else "全部标的缺数据"
+        return dbc.Badge("✗ 全缺", color="danger", className="small", title=txt)
+    txt = "缺：" + "、".join(m.symbol for m in missing) if missing else "部分标的缺数据"
+    return dbc.Badge("⚠ 部分缺", color="warning", className="small", title=txt)
+
+
 def register_strategy_crud_callbacks(app):
     @app.callback(
         Output("strategy-table-container", "children"),
@@ -31,7 +59,7 @@ def register_strategy_crud_callbacks(app):
     def refresh_strategy_table(pathname):
         svc = get_strategy_service()
         strategies = svc.list_strategies()
-        table = _build_strategy_list(strategies)
+        table = _build_strategy_list(strategies, _compute_readiness_map(strategies))
         return table, strategies
 
     @app.callback(
@@ -44,7 +72,7 @@ def register_strategy_crud_callbacks(app):
     def refresh_strategy_table_after_action(refresh_data, pathname):
         svc = get_strategy_service()
         strategies = svc.list_strategies()
-        table = _build_strategy_list(strategies)
+        table = _build_strategy_list(strategies, _compute_readiness_map(strategies))
         return table, strategies
 
     @app.callback(
@@ -164,7 +192,7 @@ def register_strategy_crud_callbacks(app):
         return no_update
 
 
-def _build_strategy_list(strategies):
+def _build_strategy_list(strategies, readiness_map=None):
     if not strategies:
         return html.Div(
             [
@@ -178,7 +206,8 @@ def _build_strategy_list(strategies):
             dbc.Col("名称", width=2, className="fw-bold"),
             dbc.Col("类型", width=1, className="fw-bold"),
             dbc.Col("标的", width=1, className="fw-bold"),
-            dbc.Col("参数", width=3, className="fw-bold"),
+            dbc.Col("参数", width=2, className="fw-bold"),
+            dbc.Col("数据就绪", width=1, className="fw-bold"),
             dbc.Col("启用", width=1, className="fw-bold"),
             dbc.Col("创建时间", width=2, className="fw-bold"),
             dbc.Col("操作", width=2, className="fw-bold"),
@@ -203,12 +232,18 @@ def _build_strategy_list(strategies):
         enabled = s.get("enabled", True)
         created_at = s.get("created_at", "")[:16]
 
+        readiness_cell = html.Div()
+        if readiness_map and name in readiness_map:
+            r_status, r_missing = readiness_map[name]
+            readiness_cell = _readiness_badge(r_status, r_missing)
+
         row = dbc.Row(
             [
                 dbc.Col(html.Strong(name), width=2),
                 dbc.Col(html.Small(TYPE_LABELS.get(stype, stype)), width=1),
                 dbc.Col(html.Small(sym_display), width=1),
-                dbc.Col(html.Small(params_summary, className="text-muted"), width=3),
+                dbc.Col(html.Small(params_summary, className="text-muted"), width=2),
+                dbc.Col(readiness_cell, width=1),
                 dbc.Col(
                     dbc.Switch(
                         id={"type": "strategy-toggle-switch", "index": name},

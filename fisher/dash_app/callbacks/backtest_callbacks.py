@@ -23,6 +23,8 @@ from fisher.visualization.downsample import lttb
 from fisher.config.schemas import AssetFeeConfig
 from fisher.event.types import Bar
 from fisher.risk.factory import build_risk_engine, load_risk_config
+from fisher.dash_app.services import get_strategy_data_service
+from fisher.dash_app.services.strategy_data_service import is_a_share, ReadinessReport
 
 STRATEGIES_DIR = Path("strategies")
 
@@ -126,6 +128,92 @@ def _bars_df_to_bars(df, symbol):
             )
         )
     return bars
+
+
+def _adj_type_for(symbol: str) -> str | None:
+    """A 股默认前复权（qfq）以保证收益口径正确；非 A 股无复权口径。"""
+    return "qfq" if is_a_share(symbol) else None
+
+
+def _render_readiness_manifest(report) -> html.Div:
+    """把数据就绪缺失清单渲染为可读告警（对应 AC-1 / D1 不静默）。"""
+    items = []
+    for m in report.missing:
+        types_cn = "、".join({
+            "daily": "日线", "adj": "复权因子", "financials": "财务数据"
+        }.get(t, t) for t in m.types)
+        bits = []
+        if types_cn:
+            bits.append(f"缺 {types_cn}")
+        if m.out_of_range:
+            bits.append("区间越界")
+        if m.note:
+            bits.append(m.note)
+        detail = "；".join(bits) if bits else "数据未就绪"
+        items.append(html.Li(f"{m.symbol}：{detail}"))
+    return html.Div(
+        [
+            dbc.Alert(
+                "数据未就绪，已阻断回测（缺失清单如下）。请先在「数据中心」补齐缓存。",
+                color="danger", className="py-2 mb-2 small",
+            ),
+            html.Ul(items, className="small mb-0 ps-3"),
+        ]
+    )
+
+
+def _readiness_report(strategy_config, start_date, end_date, symbols):
+    """模块级包装：便于单测 monkeypatch；服务异常时降级为就绪（不误阻断）。"""
+    try:
+        sds = get_strategy_data_service()
+        return sds.check_data_readiness(strategy_config, start_date, end_date, symbols)
+    except Exception as e:
+        logger.warning("readiness check degraded to ready: %s", e)
+        return ReadinessReport(
+            ready=True, blocking=False, missing=[], symbols=symbols or [], requires_financials=False
+        )
+
+
+def _load_adjusted_bars(symbol, start_date, end_date, adj_type):
+    """模块级包装：复用 _load_bars（可被单测 monkeypatch）取原始 bars，再按复权口径归一。
+
+    复权公式（方向无关）：adjusted = raw / adj_factor。无因子时回退原始 bars。
+    """
+    raw = _load_bars(symbol, start_date, end_date)
+    if len(raw) == 0 or adj_type not in ("qfq", "hfq") or not is_a_share(symbol):
+        return raw
+    db = DuckDBManager()
+    if not db._initialized:
+        try:
+            db.connect("./data/fisherquant.db", read_pool_size=4)
+        except Exception:
+            return raw
+    try:
+        adj = db.query_df(
+            "SELECT trade_date, adj_factor FROM adj_factors "
+            "WHERE ticker=? AND adj_type=? AND trade_date BETWEEN ? AND ?",
+            [symbol, adj_type, start_date, end_date],
+        )
+    except Exception:
+        return raw
+    if len(adj) == 0:
+        return raw
+    factor_map = {str(r["trade_date"])[:10]: r["adj_factor"] for r in adj.iter_rows(named=True)}
+    rows = []
+    for r in raw.iter_rows(named=True):
+        f = factor_map.get(str(r["trade_date"])[:10])
+        if f and f != 0:
+            o, h, l, c = r["open"] / f, r["high"] / f, r["low"] / f, r["close"] / f
+        else:
+            o, h, l, c = r["open"], r["high"], r["low"], r["close"]
+        rows.append({
+            "ticker": r["ticker"], "trade_date": r["trade_date"],
+            "open": o, "high": h, "low": l, "close": c,
+            "volume": r["volume"], "amount": r["amount"], "market": r["market"],
+        })
+    return pl.DataFrame(rows).select(
+        ["ticker", "trade_date", "open", "high", "low", "close", "volume", "amount", "market"]
+    )
 
 
 def _load_benchmark_nav(benchmark_ticker, start_date, end_date, nav_len):
@@ -510,6 +598,17 @@ def register_backtest_callbacks(app):
                 False, False,
             )
 
+        # P0-1 数据就绪校验（含越界）：全缺则阻断并展示缺失清单（D1 不静默空跑）
+        readiness = _readiness_report(strategy_config, start_date, end_date, target_symbols)
+        if readiness.blocking:
+            return (
+                0, "0%", "数据未就绪",
+                _render_readiness_manifest(readiness),
+                html.Div(), html.Div(),
+                False, {}, {"display": "none"},
+                False, False,
+            )
+
         commission_pct = (commission or 0.025) / 100.0
         initial_capital = capital or 1000000.0
 
@@ -534,7 +633,8 @@ def register_backtest_callbacks(app):
                     False, {}, {"display": "none"},
                     False, False,
                 )
-            df = _load_bars(symbol, start_date, end_date)
+            # P0-2：对 A 股注入前复权（qfq）口径，保证收益口径正确
+            df = _load_adjusted_bars(symbol, start_date, end_date, _adj_type_for(symbol))
             if len(df) == 0:
                 continue
             all_rows.extend(_collect_bar_rows(df))
@@ -567,7 +667,8 @@ def register_backtest_callbacks(app):
 
         benchmark_nav = None
         if benchmark_ticker and benchmark_ticker != "none":
-            b_df = _load_bars(benchmark_ticker, start_date, end_date)
+            # P0-2：基准同样按复权口径对齐，保证与策略可比
+            b_df = _load_adjusted_bars(benchmark_ticker, start_date, end_date, _adj_type_for(benchmark_ticker))
             if len(b_df) > 0:
                 b_closes = b_df["close"].to_list()
                 benchmark_nav = _compute_benchmark_nav(b_closes, len(nav))
@@ -578,6 +679,8 @@ def register_backtest_callbacks(app):
         mdd = max_drawdown(nav)
 
         serializer = BacktestSerializer()
+        # P0-2：回测记录留痕复权口径（A 股 qfq，非 A 股 none）
+        adj_caliber = {s: (_adj_type_for(s) or "none") for s in target_symbols[:5]}
         serializer.save(
             result_id=result_id,
             nav_history=nav,
@@ -590,6 +693,7 @@ def register_backtest_callbacks(app):
                 "end_date": end_date,
                 "capital": initial_capital,
                 "commission": commission_pct,
+                "adj_caliber": adj_caliber,
                 "total_return": total_ret,
                 "sharpe": sharpe,
                 "max_drawdown": mdd,
@@ -598,6 +702,18 @@ def register_backtest_callbacks(app):
         serializer.cleanup(keep=200)
 
         summary = _build_summary(nav, trades, benchmark_nav)
+        # P0-1（D1）：部分缺失时仍跑可用标的，但在结果区提示缺失清单
+        if readiness.missing:
+            summary = html.Div(
+                [
+                    dbc.Alert(
+                        "已用可用标的跑回测；以下标的因数据未就绪被跳过："
+                        + "、".join(m.symbol for m in readiness.missing),
+                        color="warning", className="py-2 mb-2 small",
+                    ),
+                    summary,
+                ]
+            )
         thumbnail = _build_equity_thumbnail(nav)
         link = html.A(
             dbc.Button("查看完整看板", color="info", size="sm"),
@@ -619,6 +735,66 @@ def register_backtest_callbacks(app):
     )
     def prevent_double_click(n):
         return True
+
+    # ------------------------------------------------------------------ #
+    # P0-3 缓存区间联动：「使用缓存区间」预设 + 越界警告
+    # ------------------------------------------------------------------ #
+    @app.callback(
+        Output("bt-date-range", "start_date"),
+        Output("bt-date-range", "end_date"),
+        Input("bt-use-cache-range-btn", "n_clicks"),
+        State("bt-symbol-select", "value"),
+        State("bt-strategy-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def use_cache_range(n_clicks, symbols, strategy_json):
+        if not n_clicks:
+            return no_update, no_update
+        syms = list(symbols) if symbols else []
+        cfg = {}
+        if not syms and strategy_json:
+            try:
+                cfg = json.loads(strategy_json)
+            except (json.JSONDecodeError, TypeError):
+                cfg = {}
+        try:
+            sds = get_strategy_data_service()
+            start, end = sds.cache_range_for(cfg, syms if syms else None)
+        except Exception as e:
+            logger.warning("use_cache_range failed: %s", e)
+            return no_update, no_update
+        return start, end
+
+    @app.callback(
+        Output("bt-range-warning", "children"),
+        Input("bt-date-range", "start_date"),
+        Input("bt-date-range", "end_date"),
+        Input("bt-symbol-select", "value"),
+        Input("bt-strategy-dropdown", "value"),
+    )
+    def warn_out_of_range(start_date, end_date, symbols, strategy_json):
+        if not start_date or not end_date:
+            return None
+        syms = list(symbols) if symbols else []
+        cfg = {}
+        if not syms and strategy_json:
+            try:
+                cfg = json.loads(strategy_json)
+            except (json.JSONDecodeError, TypeError):
+                cfg = {}
+        try:
+            sds = get_strategy_data_service()
+            rep = sds.check_data_readiness(cfg, start_date, end_date, syms if syms else cfg.get("symbols"))
+        except Exception as e:
+            logger.warning("warn_out_of_range failed: %s", e)
+            return None
+        out = [m.symbol for m in rep.missing if m.out_of_range]
+        if out:
+            return dbc.Alert(
+                f"以下标的区间超出缓存边界（将触发即时取数或空结果）：{', '.join(out)}",
+                color="warning", className="py-1 px-2 small mb-0",
+            )
+        return None
 
     @app.callback(
         Output("bt-cancel-flag", "data", allow_duplicate=True),

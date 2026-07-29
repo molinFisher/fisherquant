@@ -1554,18 +1554,31 @@ class TestStrategyWizardCallbacks:
         assert "暂无策略" in "".join(_text(res[6]))
 
     def test_load_symbol_pool_options(self, monkeypatch, _stub_wizard_steps):
+        """FR-新：标的选择下拉改为 cache_catalog 数据源，label 带覆盖度徽标
+        [日✓/✗ 复✓/✗ 财✓/✗]，value 为 ticker。"""
+        class _FakeCatalogService:
+            def get_cache_catalog(self):
+                return [
+                    {"ticker": "600519", "has_daily": True, "has_adj": False,
+                     "has_financials": True},
+                    {"ticker": "000001", "has_daily": True, "has_adj": True,
+                     "has_financials": False},
+                ]
         monkeypatch.setattr(strategy_wizard_callbacks, "get_strategy_service",
                             lambda: FakeService())
-        monkeypatch.setattr("fisher.dash_app.services.get_data_service",
-                            lambda: FakeService(cached_table=[
-                                {"ticker": "600519", "market": "a_share",
-                                 "records": 1, "start_date": "2024-01-01",
-                                 "end_date": "2024-02-01"}]))
+        # 注入模块级 get_cache_catalog_service（回调内部 from ... import 取它）
+        monkeypatch.setattr(
+            "fisher.dash_app.services.get_cache_catalog_service",
+            lambda: _FakeCatalogService())
         with capture_dash_callbacks() as app:
             strategy_wizard_callbacks.register_strategy_wizard_callbacks(app)
             cb = _nth(app, 3)
         assert cb(False) == []
-        assert cb(True) == [{"label": "600519", "value": "600519"}]
+        opts = cb(True)
+        assert opts == [
+            {"label": "600519  [日✓ 复✗ 财✓]", "value": "600519"},
+            {"label": "000001  [日✓ 复✓ 财✗]", "value": "000001"},
+        ]
 
     def test_update_params_form_on_type_change(self, monkeypatch, _stub_wizard_steps):
         monkeypatch.setattr(strategy_wizard_callbacks, "get_strategy_service",
