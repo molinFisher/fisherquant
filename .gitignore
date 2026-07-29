@@ -9,6 +9,10 @@ tests/.pytest-tmp/
 dist/
 htmlcov/
 .coverage
+# test coverage artifacts (generated, do not commit)
+tests/.coverage.json
+tests/coverage-html/
+tests/.coverage-run.log
 
 *.db
 *.db-wal
