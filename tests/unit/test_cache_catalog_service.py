@@ -184,3 +184,49 @@ class TestBackfill:
         assert len(engine.query_df(
             "SELECT * FROM cache_catalog"
         ).to_dicts()) == 1
+
+
+class TestNameResolutionFromSymbolDict:
+    """回归：已缓存数据页必须以 symbol_dict 权威名称为准（修复 A 股名称错显）。
+
+    故障场景：A 股落库时 record_coverage 未显式传 name，仅能靠 symbol_dict 兜底；
+    当 symbol_dict.a_share 为空或陈旧时，cache_catalog.name 会退化成 ticker
+    （如 '600519.SH'），导致缓存目录页 A 股名称显示为代码而非公司名。
+    """
+
+    def test_summary_view_resolves_symbol_dict_name(self, tmp_path):
+        engine = _make(tmp_path)
+        # 模拟历史脏数据：cache_catalog.name 退化成 ticker
+        engine.execute(
+            "INSERT INTO cache_catalog (ticker, market, name) VALUES (?,?,?)",
+            ["600519.SH", "a_share", "600519.SH"],
+        )
+        svc = CacheCatalogService(engine)
+        rows = svc.get_cache_summary()
+        assert len(rows) == 1
+        # 展示层名称应来自 symbol_dict，而非退化成的 ticker
+        assert rows[0]["name"] == "贵州茅台"
+        assert rows[0]["name"] != "600519.SH"
+
+    def test_catalog_query_resolves_symbol_dict_name(self, tmp_path):
+        engine = _make(tmp_path)
+        engine.execute(
+            "INSERT INTO cache_catalog (ticker, market, name) VALUES (?,?,?)",
+            ["600519.SH", "a_share", "600519.SH"],
+        )
+        svc = CacheCatalogService(engine)
+        rows = svc.get_cache_catalog()
+        assert len(rows) == 1
+        assert rows[0]["name"] == "贵州茅台"
+
+    def test_summary_text_filter_matches_symbol_dict_name(self, tmp_path):
+        """按名称搜索时，应匹配 symbol_dict 中的中文名（即便 catalog.name 是 ticker）。"""
+        engine = _make(tmp_path)
+        engine.execute(
+            "INSERT INTO cache_catalog (ticker, market, name) VALUES (?,?,?)",
+            ["600519.SH", "a_share", "600519.SH"],
+        )
+        svc = CacheCatalogService(engine)
+        rows = svc.get_cache_summary(text="茅台")
+        assert len(rows) == 1
+        assert rows[0]["ticker"] == "600519.SH"

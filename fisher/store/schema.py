@@ -112,7 +112,9 @@ _SNAPSHOTS_DDL = """
 _CACHE_SUMMARY_VIEW_DDL = """
     CREATE OR REPLACE VIEW v_cache_summary AS
     SELECT
-        c.ticker, c.name, c.market, c.auto_load_enabled,
+        c.ticker,
+        COALESCE(s.name, c.name) AS name,
+        c.market, c.auto_load_enabled,
         c.has_daily, c.has_minute, c.has_realtime, c.has_adj, c.has_financials,
         c.daily_start, c.daily_end, c.realtime_ts, c.minute_periods,
         (SELECT COUNT(*) FROM bars_daily d WHERE d.ticker = c.ticker)  AS daily_rows,
@@ -121,6 +123,7 @@ _CACHE_SUMMARY_VIEW_DDL = """
         (SELECT COUNT(*) FROM adj_factors a WHERE a.ticker = c.ticker) AS adj_rows,
         (SELECT COUNT(*) FROM financials f WHERE f.ticker = c.ticker)  AS fin_rows
     FROM cache_catalog c
+    LEFT JOIN symbol_dict s ON s.ticker = c.ticker
 """
 
 
@@ -166,7 +169,6 @@ _TABLES = [
     _ADJ_FACTORS_DDL,
     _FINANCIALS_DDL,
     _SNAPSHOTS_DDL,
-    _CACHE_SUMMARY_VIEW_DDL,
     "ALTER TABLE bars_minute ADD COLUMN IF NOT EXISTS period VARCHAR DEFAULT '5'",
     """
     CREATE TABLE IF NOT EXISTS orders (
@@ -225,6 +227,8 @@ _TABLES = [
     """,
     _SYMBOL_DICT_DDL,
     _SYMBOL_LOAD_STATE_DDL,
+    # 视图引用 symbol_dict，必须在其之后创建（symbol_dict 见上）
+    _CACHE_SUMMARY_VIEW_DDL,
 ]
 
 

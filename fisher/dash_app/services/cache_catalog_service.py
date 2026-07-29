@@ -197,22 +197,23 @@ class CacheCatalogService:
         text: 代码或名称模糊匹配
         """
         parts = [
-            "SELECT ticker, name, market,",
+            "SELECT c.ticker, COALESCE(s.name, c.name) AS name, c.market,",
             "has_daily, has_minute, has_realtime, has_adj, has_financials,",
             "auto_load_enabled, daily_start, daily_end, minute_start, minute_end,",
             "realtime_ts, adj_type, fin_report_end, minute_periods, last_update",
-            "FROM cache_catalog",
+            "FROM cache_catalog c",
+            "LEFT JOIN symbol_dict s ON s.ticker = c.ticker",
         ]
         clauses: list[str] = []
         params: list = []
         if market and market != "all":
-            clauses.append("market = ?")
+            clauses.append("c.market = ?")
             params.append(market)
         if data_type and data_type in DATA_TYPES:
             clauses.append(f"has_{data_type} = TRUE")
         if text and text.strip():
             esc = escape_like(text.strip())
-            clauses.append("(ticker LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')")
+            clauses.append("(c.ticker LIKE ? ESCAPE '\\' OR COALESCE(s.name, c.name) LIKE ? ESCAPE '\\')")
             params.extend([f"%{esc}%", f"%{esc}%"])
         if clauses:
             parts.append("WHERE " + " AND ".join(clauses))
