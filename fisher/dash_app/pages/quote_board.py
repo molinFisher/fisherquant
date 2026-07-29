@@ -107,14 +107,20 @@ def create_quote_board_layout():
                     ),
                     # FR-3（行情看板体验优化）：自定义时间段——选择「自定义」后填入起止日期
                     html.Div(
-                        dcc.DatePickerRange(
-                            id="qb-daily-date-range",
-                            display_format="YYYY-MM-DD",
-                            start_date=None,
-                            end_date=None,
-                            className="small mb-2",
-                        ),
-                        className="mb-2",
+                        [
+                            dcc.DatePickerRange(
+                                id="qb-daily-date-range",
+                                display_format="YYYY-MM-DD",
+                                start_date=None,
+                                end_date=None,
+                                className="small",
+                            ),
+                            dbc.Button(
+                                "当日", id="qb-daily-today-btn", color="light", size="sm",
+                                className="ms-2", title="将日线区间设为今天",
+                            ),
+                        ],
+                        className="d-flex align-items-center mb-2",
                     ),
                     dcc.Graph(id="qb-daily-chart", figure={"data": [], "layout": {}}),
                 ]),

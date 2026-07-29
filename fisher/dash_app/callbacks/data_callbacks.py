@@ -417,5 +417,29 @@ def register_data_callbacks(app):
         if data_type == "minute":
             start = (today - datetime.timedelta(days=7)).isoformat()
             return start, today.isoformat()
+
+    # 「当日」快捷按钮：获取数据时间范围设为今天
+    @app.callback(
+        Output("date-range-picker", "start_date"),
+        Output("date-range-picker", "end_date"),
+        Input("dc-range-today-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def set_range_today(n_clicks):
+        import datetime
+        today = datetime.date.today().isoformat()
+        return today, today
+
+    # 「当日」快捷按钮：导出起止日期都设为今天
+    @app.callback(
+        Output("export-start-date", "date"),
+        Output("export-end-date", "date"),
+        Input("export-today-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def set_export_today(n_clicks):
+        import datetime
+        today = datetime.date.today().isoformat()
+        return today, today
         # 日线/复权/财务恢复默认当年范围
         return "2024-01-01", "2024-12-31"

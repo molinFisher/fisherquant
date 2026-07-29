@@ -292,3 +292,43 @@ def test_consume_cache_intent_no_tickers_no_op():
     from fisher.dash_app.callbacks import data_cache_callbacks as dcc
     res = dcc.consume_cache_intent("?data_type=daily", "/data-center", [])
     assert res == (no_update, no_update)
+
+
+# --------------------------------------------------------------------------- #
+# 「当日」快捷按钮（行情看板 + 数据中心时间范围选择器）
+# --------------------------------------------------------------------------- #
+def test_set_daily_today_sets_today_and_custom():
+    """看板日线「当日」按钮：区间设为今天，并切到「自定义」档以触发当天渲染。"""
+    from fisher.dash_app.callbacks import quote_callbacks as qc
+    from datetime import date
+    with capture_dash_callbacks() as app:
+        qc.register_quote_callbacks(app)
+        cb = _find_cb(app, "set_daily_today")
+        start, end, rng = cb(1)
+    today = date.today().isoformat()
+    assert start == today and end == today
+    assert rng == "custom"
+
+
+def test_set_range_today_sets_today():
+    """数据中心获取时间范围「当日」按钮：start/end 都设为今天。"""
+    from fisher.dash_app.callbacks import data_callbacks as dc
+    from datetime import date
+    with capture_dash_callbacks() as app:
+        dc.register_data_callbacks(app)
+        cb = _find_cb(app, "set_range_today")
+        start, end = cb(1)
+    today = date.today().isoformat()
+    assert start == today and end == today
+
+
+def test_set_export_today_sets_today():
+    """数据中心导出起止日期「当日」按钮：两者都设为今天。"""
+    from fisher.dash_app.callbacks import data_callbacks as dc
+    from datetime import date
+    with capture_dash_callbacks() as app:
+        dc.register_data_callbacks(app)
+        cb = _find_cb(app, "set_export_today")
+        start, end = cb(1)
+    today = date.today().isoformat()
+    assert start == today and end == today

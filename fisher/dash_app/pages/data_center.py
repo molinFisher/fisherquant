@@ -86,6 +86,11 @@ def _create_query_tab():
                                         end_date="2024-12-31",
                                         display_format="YYYY-MM-DD",
                                     ),
+                                    dbc.Button(
+                                        "当日", id="dc-range-today-btn", color="light",
+                                        size="sm", className="ms-2 mt-1",
+                                        title="将时间范围设为今天",
+                                    ),
                                     dbc.Label("数据类型", className="mt-2"),
                                     dcc.RadioItems(
                                         id="data-type-radio",
@@ -611,6 +616,11 @@ def _create_advanced_tab():
                                                     dcc.DatePickerSingle(id="export-end-date", date=""),
                                                 ]),
                                             ], className="mb-1"),
+                                            dbc.Button(
+                                                "当日", id="export-today-btn", color="light",
+                                                size="sm", className="mb-2",
+                                                title="将起止日期都设为今天",
+                                            ),
                                             dbc.Button(
                                                 "导出数据",
                                                 id="export-data-btn",
