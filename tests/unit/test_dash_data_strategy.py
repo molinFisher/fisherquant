@@ -54,7 +54,7 @@ class FakeService:
     def search_symbols(self, query):
         return self.data.get("search_symbols", [])
 
-    def fetch_bars(self, symbols, start, end, data_type, period):
+    def fetch_bars(self, symbols, start, end, data_type, period, conservative=False):
         self.calls.append(("fetch_bars", list(symbols)))
         return self.data.get("fetch_bars", {})
 
@@ -275,7 +275,7 @@ class TestDataCallbacks:
         with capture_dash_callbacks() as app:
             data_callbacks.register_data_callbacks(app)
             cb = app.by_output("fetch-results")
-        final = cb(1, [], "2024-01-01", "2024-02-01", "daily", "")
+        final = cb(1, [], "2024-01-01", "2024-02-01", "daily", "", False)
         assert "勾选标的" in final[0]
 
     def test_fetch_data_success(self, monkeypatch):
@@ -287,7 +287,7 @@ class TestDataCallbacks:
             cb = app.by_output("fetch-results")
         pool = [{"value": "600519.SH", "code": "600519",
                  "name": "贵州茅台", "market": "a_share"}]
-        final = cb(1, pool, "2024-01-01", "2024-02-01", "daily", "")
+        final = cb(1, pool, "2024-01-01", "2024-02-01", "daily", "", False)
         assert "成功 1" in final[0]
         assert "✓ 600519.SH: 5条记录" in "".join(_text(final[1]))
         # 进度条已按产品要求移除（回调仅输出 fetch-status / fetch-results 两项）
@@ -308,7 +308,7 @@ class TestDataCallbacks:
             {"value": "00700.HK", "code": "00700", "name": "腾讯控股",
              "market": "hk_connect"},
         ]
-        final = cb(1, pool, "2024-01-01", "2024-02-01", "financials", "")
+        final = cb(1, pool, "2024-01-01", "2024-02-01", "financials", "", False)
         txt = "".join(_text(final[1]))
         assert "⊘ 00700.HK" in txt and "仅支持 A 股" in txt
         assert ("fetch_bars", ["600519.SH"]) in fake.calls

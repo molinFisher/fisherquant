@@ -267,7 +267,7 @@ class CacheCatalogService:
         try:
             df = self._db.query_df(
                 "SELECT ticker, has_daily, has_minute, has_realtime, has_adj, has_financials, "
-                "auto_load_enabled, realtime_ts, minute_periods "
+                "auto_load_enabled, realtime_ts, minute_periods, minute_start, minute_end "
                 f"FROM cache_catalog WHERE ticker IN ({placeholders})",
                 tickers,
             )

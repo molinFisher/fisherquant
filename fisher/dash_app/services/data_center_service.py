@@ -1,5 +1,6 @@
 import logging
 import time
+import random
 import akshare as ak
 from ...store.engine import DuckDBManager
 from ...market.rate_limiter import RateLimiter
@@ -15,16 +16,45 @@ from .symbol_search import (
 
 logger = logging.getLogger(__name__)
 
+from ...market.rate_limiter import get_global_limiter, RateLimitError, is_rate_limit_error
 
-def _retry_fetch(fn, attempts: int = 3, delay: float = 1.5):
-    """akshare 东财系接口偶发 RemoteDisconnected 瞬时断连，轻量重试。"""
+
+def _is_network_error(exc: Exception) -> bool:
+    """粗略判断是否为网络层异常（超时 / 连接失败），与限流、无数据区分。"""
+    msg = type(exc).__name__ + " " + str(exc)
+    return any(k in msg for k in ("Timeout", "Connect", "Connection",
+                                  "RemoteDisconnected", "ConnectionError",
+                                  "Socket", "timed out", "NameResolution"))
+
+
+def _retry_fetch(fn, attempts: int = 3, delay: float = 1.5, limiter=None):
+    """akshare 东财系接口偶发瞬断，轻量重试；**每次请求前经限流器节流**，
+    从源头消除"多标的请求突发→被数据源限流"。
+
+    - 限流特征异常（429 / Max retries / 请求过于频繁 等）会触发限流器
+      ``cool_down`` 自愈降速，并以 :class:`RateLimitError` 抛出，供上层归类为
+      ``reason="rate_limited"``。
+    - 普通异常按原退避重试；最终失败抛出最后一次异常（限流异常保留为 RateLimitError）。
+    """
+    if limiter is None:
+        limiter = get_global_limiter()
     last_exc = None
     for i in range(attempts):
+        limiter.acquire()  # 节流：未到速率窗口则在此阻塞
         try:
             return fn()
         except Exception as e:
             last_exc = e
-            if i < attempts - 1:
+            if is_rate_limit_error(e):
+                # 限流：降速自愈，并把异常升级为结构化限流错误
+                limiter.cool_down(seconds=20.0 + 5.0 * i)
+                last_exc = RateLimitError(str(e))
+                logger.warning("Upstream rate-limited (attempt %d/%d): %s",
+                               i + 1, attempts, e)
+                if i < attempts - 1:
+                    # 退避更长，给数据源喘息；cool_down 已叠加冷却
+                    time.sleep(delay * (2 ** i) + random.uniform(0, 0.5))
+            elif i < attempts - 1:
                 time.sleep(delay)
     raise last_exc
 
@@ -399,166 +429,212 @@ class DataCenterService:
         return rows, fin_end
 
     def fetch_bars(self, symbols: list[str], start: str, end: str,
-                   data_type: str = "daily", period: str = "") -> dict:
+                   data_type: str = "daily", period: str = "",
+                   conservative: bool = False) -> dict:
         results = {}
         # akshare 东财系接口只接受 YYYYMMDD；日期选择器给出 ISO（带横线），统一转换
         start_compact = (start or "").replace("-", "")
         end_compact = (end or "").replace("-", "")
-        for sym in symbols:
-            try:
-                is_hk = sym.upper().endswith(".HK")
-                code = sym.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
-                market = "hk_connect" if is_hk else "a_share"
-                if data_type == "daily":
-                    if is_hk:
-                        # 港股：stock_hk_daily 返回全量历史，按区间过滤
-                        df = _retry_fetch(lambda: ak.stock_hk_daily(symbol=code))
-                        if df is None or df.empty:
-                            results[sym] = {"status": "failed", "error": "该区间无数据"}
+        # FR-7：循环前**批量**查一次覆盖度，避免逐标的重复查询
+        coverage = {}
+        try:
+            coverage = self._catalog.get_coverage_for_tickers(list(symbols))
+        except Exception:
+            coverage = {}
+        # FR-5：保守模式 → 临时降速（finally 恢复默认速率）
+        if conservative:
+            self._limiter.set_rate(max(5, int(self._limiter._default_max // 2)))
+        try:
+            for sym in symbols:
+                try:
+                    is_hk = sym.upper().endswith(".HK")
+                    code = sym.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
+                    market = "hk_connect" if is_hk else "a_share"
+                    if data_type == "minute":
+                        # FR-7：已完全覆盖则跳过，不发起请求（降低限流面）
+                        cov = coverage.get(sym)
+                        if (cov and cov.get("has_minute")
+                                and period in (cov.get("minute_periods") or "")
+                                and cov.get("minute_start") and cov.get("minute_end")
+                                and (start or "") >= str(cov.get("minute_start"))[:10]
+                                and (end or "") <= str(cov.get("minute_end"))[:10]):
+                            results[sym] = {"status": "skipped", "reason": "cached",
+                                            "error": "已缓存，区间已覆盖，跳过"}
                             continue
-                        rows = []
-                        for _, r in df.iterrows():
-                            d = r["date"]
-                            ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
-                                  else str(d)[:10])
-                            if (start and ds < start) or (end and ds > end):
+                    if data_type == "daily":
+                        if is_hk:
+                            # 港股：stock_hk_daily 返回全量历史，按区间过滤
+                            df = _retry_fetch(lambda: ak.stock_hk_daily(symbol=code),
+                                             limiter=self._limiter)
+                            if df is None or df.empty:
+                                results[sym] = {"status": "failed", "reason": "no_data",
+                                               "error": "该区间无数据"}
                                 continue
-                            rows.append([sym, ds, float(r["open"]), float(r["high"]),
-                                         float(r["low"]), float(r["close"]),
-                                         int(r.get("volume", 0) or 0), 0.0,
-                                         "hk_connect", 1.0])
-                        if not rows:
-                            results[sym] = {"status": "failed", "error": "该区间无数据"}
-                            continue
-                        s, e = self._bounds(rows, 1)
-                        # 同一事务：删旧 + 写新 + 更新 catalog 覆盖度（FR-1.2 / FR-1.6）
-                        with self._db.transaction() as conn:
-                            conn.execute("DELETE FROM bars_daily WHERE ticker=?", [sym])
-                            conn.executemany(
-                                "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
-                            self._catalog.record_coverage(
-                                conn, sym, market, data_type="daily", start=s, end=e)
-                        results[sym] = {"status": "ok", "count": len(rows)}
-                        continue
-                    df = _retry_fetch(lambda: ak.stock_zh_a_hist(
-                        symbol=code, period="daily",
-                        start_date=start_compact, end_date=end_compact, adjust=""))
-                    if df is not None and not df.empty:
-                        ticker = resolve_ticker(code, "a_share")
-                        rows = []
-                        for _, r in df.iterrows():
-                            rows.append([ticker, str(r["日期"])[:10], float(r["开盘"]),
-                                         float(r["最高"]), float(r["最低"]), float(r["收盘"]),
-                                         int(r["成交量"]), float(r["成交额"]), "a_share", 1.0])
-                        s, e = self._bounds(rows, 1)
-                        with self._db.transaction() as conn:
-                            conn.execute("DELETE FROM bars_daily WHERE ticker=?", [ticker])
-                            conn.executemany(
-                                "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
-                            self._catalog.record_coverage(
-                                conn, ticker, "a_share", data_type="daily", start=s, end=e)
-                        results[sym] = {"status": "ok", "count": len(rows)}
-                    else:
-                        results[sym] = {"status": "failed", "error": "该区间无数据"}
-                elif data_type == "minute":
-                    if is_hk:
-                        results[sym] = {"status": "failed",
-                                        "error": "分钟线暂仅支持 A 股"}
-                        continue
-                    effective_period = period or "5"  # 取数口径与落库口径必须一致（多周期）
-                    df = _retry_fetch(lambda: ak.stock_zh_a_hist_min_em(
-                        symbol=code, period=effective_period,
-                        start_date=start_compact, end_date=end_compact))
-                    if df is not None and not df.empty:
-                        ticker = resolve_ticker(code, "a_share")
-                        rows = []
-                        for _, r in df.iterrows():
-                            rows.append([ticker, str(r["时间"]), float(r["开盘"]),
-                                         float(r["最高"]), float(r["最低"]), float(r["收盘"]),
-                                         int(r["成交量"]), float(r["成交额"]),
-                                         "a_share", effective_period])
-                        s, e = self._bounds(rows, 1)
-                        # 多周期分钟线：DELETE 仅命中该 period，避免不同周期互相覆盖（PK 含 period）
-                        with self._db.transaction() as conn:
-                            conn.execute(
-                                "DELETE FROM bars_minute WHERE ticker=? AND period=?",
-                                [ticker, effective_period])
-                            conn.executemany(
-                                "INSERT INTO bars_minute "
-                                "(ticker, bar_time, open, high, low, close, volume, amount, market, period) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
-                            self._catalog.record_coverage(
-                                conn, ticker, "a_share", data_type="minute", start=s,
-                                end=e, period=effective_period)
-                        results[sym] = {"status": "ok", "count": len(rows)}
-                    else:
-                        results[sym] = {"status": "failed", "error": "该区间无数据"}
-                elif data_type == "financials":
-                    # v5 financials 表：(ticker, report_date, report_type, indicator, value, unit)
-                    df = _retry_fetch(lambda: ak.stock_financial_abstract(symbol=code))
-                    if df is not None and not df.empty:
-                        rows, fin_end = self._convert_financials(sym, df)
-                        if not rows:
-                            results[sym] = {"status": "failed", "error": "无财务数据"}
-                            continue
-                        with self._db.transaction() as conn:
-                            conn.execute("DELETE FROM financials WHERE ticker=?", [sym])
-                            conn.executemany(
-                                "INSERT INTO financials "
-                                "(ticker, report_date, report_type, indicator, value, unit) "
-                                "VALUES (?,?,?,?,?,?)", rows)
-                            self._catalog.record_coverage(
-                                conn, sym, market, data_type="financials",
-                                fin_report_end=fin_end)
-                        results[sym] = {"status": "ok", "financials": True}
-                    else:
-                        results[sym] = {"status": "failed", "error": "无财务数据"}
-                elif data_type == "adj":
-                    # FR-2.4（Task #21）：复权因子入库。A 股仅——由 stock_zh_a_daily
-                    # 的 qfq_factor / hfq_factor 因子序列回填 adj_factors（PK ticker,trade_date,adj_type）。
-                    # 港股无复权因子口径，直接失败（与财务同策略）。
-                    if is_hk:
-                        results[sym] = {"status": "failed", "error": "复权因子仅支持 A 股"}
-                        continue
-                    ticker = resolve_ticker(code, "a_share")
-                    exch = "sh" if code.startswith(("6", "5", "9")) else "sz"
-                    adj_rows = []
-                    adj_fetched = False
-                    for adj_type, factor_col in (("qfq", "qfq_factor"),
-                                                 ("hfq", "hfq_factor")):
-                        try:
-                            df = _retry_fetch(lambda: ak.stock_zh_a_daily(
-                                symbol=f"{exch}{code}", start_date=start_compact,
-                                end_date=end_compact, adjust=f"{adj_type}_factor"))
-                        except Exception:
-                            df = None
-                        if df is None or (hasattr(df, "empty") and df.empty):
-                            continue
-                        adj_fetched = True
-                        for _, r in df.iterrows():
-                            d = r["date"]
-                            ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
-                                  else str(d)[:10])
-                            if (start and ds < start) or (end and ds > end):
+                            rows = []
+                            for _, r in df.iterrows():
+                                d = r["date"]
+                                ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
+                                      else str(d)[:10])
+                                if (start and ds < start) or (end and ds > end):
+                                    continue
+                                rows.append([sym, ds, float(r["open"]), float(r["high"]),
+                                             float(r["low"]), float(r["close"]),
+                                             int(r.get("volume", 0) or 0), 0.0,
+                                             "hk_connect", 1.0])
+                            if not rows:
+                                results[sym] = {"status": "failed", "reason": "no_data",
+                                               "error": "该区间无数据"}
                                 continue
-                            adj_rows.append([ticker, ds, adj_type,
-                                             float(r[factor_col])])
-                    if not adj_fetched or not adj_rows:
-                        results[sym] = {"status": "failed",
-                                        "error": "该区间无复权因子数据"}
-                        continue
-                    with self._db.transaction() as conn:
-                        conn.executemany(
-                            "INSERT OR REPLACE INTO adj_factors "
-                            "(ticker, trade_date, adj_type, adj_factor) "
-                            "VALUES (?,?,?,?)", adj_rows)
-                        # qfq 作为默认展示口径写入 adj_type；两种因子均入库于 adj_factors
-                        self._catalog.record_coverage(
-                            conn, ticker, "a_share", data_type="adj", adj_type="qfq")
-                    results[sym] = {"status": "ok", "adj": True,
-                                    "count": len(adj_rows)}
-            except Exception as ex:
-                results[sym] = {"status": "failed", "error": str(ex)[:80]}
+                            s, e = self._bounds(rows, 1)
+                            # 同一事务：删旧 + 写新 + 更新 catalog 覆盖度（FR-1.2 / FR-1.6）
+                            with self._db.transaction() as conn:
+                                conn.execute("DELETE FROM bars_daily WHERE ticker=?", [sym])
+                                conn.executemany(
+                                    "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                                self._catalog.record_coverage(
+                                    conn, sym, market, data_type="daily", start=s, end=e)
+                            results[sym] = {"status": "ok", "count": len(rows)}
+                            continue
+                        df = _retry_fetch(lambda: ak.stock_zh_a_hist(
+                            symbol=code, period="daily",
+                            start_date=start_compact, end_date=end_compact, adjust=""),
+                            limiter=self._limiter)
+                        if df is not None and not df.empty:
+                            ticker = resolve_ticker(code, "a_share")
+                            rows = []
+                            for _, r in df.iterrows():
+                                rows.append([ticker, str(r["日期"])[:10], float(r["开盘"]),
+                                             float(r["最高"]), float(r["最低"]), float(r["收盘"]),
+                                             int(r["成交量"]), float(r["成交额"]), "a_share", 1.0])
+                            s, e = self._bounds(rows, 1)
+                            with self._db.transaction() as conn:
+                                conn.execute("DELETE FROM bars_daily WHERE ticker=?", [ticker])
+                                conn.executemany(
+                                    "INSERT INTO bars_daily VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                                self._catalog.record_coverage(
+                                    conn, ticker, "a_share", data_type="daily", start=s, end=e)
+                            results[sym] = {"status": "ok", "count": len(rows)}
+                        else:
+                            results[sym] = {"status": "failed", "reason": "no_data",
+                                            "error": "该区间无数据"}
+                    elif data_type == "minute":
+                        if is_hk:
+                            results[sym] = {"status": "failed", "reason": "unsupported",
+                                            "error": "分钟线暂仅支持 A 股"}
+                            continue
+                        effective_period = period or "5"  # 取数口径与落库口径必须一致（多周期）
+                        df = _retry_fetch(lambda: ak.stock_zh_a_hist_min_em(
+                            symbol=code, period=effective_period,
+                            start_date=start_compact, end_date=end_compact),
+                            limiter=self._limiter)
+                        if df is not None and not df.empty:
+                            ticker = resolve_ticker(code, "a_share")
+                            rows = []
+                            for _, r in df.iterrows():
+                                rows.append([ticker, str(r["时间"]), float(r["开盘"]),
+                                             float(r["最高"]), float(r["最低"]), float(r["收盘"]),
+                                             int(r["成交量"]), float(r["成交额"]),
+                                             "a_share", effective_period])
+                            s, e = self._bounds(rows, 1)
+                            # 多周期分钟线：DELETE 仅命中该 period，避免不同周期互相覆盖（PK 含 period）
+                            with self._db.transaction() as conn:
+                                conn.execute(
+                                    "DELETE FROM bars_minute WHERE ticker=? AND period=?",
+                                    [ticker, effective_period])
+                                conn.executemany(
+                                    "INSERT INTO bars_minute "
+                                    "(ticker, bar_time, open, high, low, close, volume, amount, market, period) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                                self._catalog.record_coverage(
+                                    conn, ticker, "a_share", data_type="minute", start=s,
+                                    end=e, period=effective_period)
+                            results[sym] = {"status": "ok", "count": len(rows)}
+                        else:
+                            results[sym] = {"status": "failed", "reason": "no_data",
+                                            "error": "该区间无数据"}
+                    elif data_type == "financials":
+                        # v5 financials 表：(ticker, report_date, report_type, indicator, value, unit)
+                        df = _retry_fetch(lambda: ak.stock_financial_abstract(symbol=code),
+                                     limiter=self._limiter)
+                        if df is not None and not df.empty:
+                            rows, fin_end = self._convert_financials(sym, df)
+                            if not rows:
+                                results[sym] = {"status": "failed", "reason": "no_data",
+                                               "error": "无财务数据"}
+                                continue
+                            with self._db.transaction() as conn:
+                                conn.execute("DELETE FROM financials WHERE ticker=?", [sym])
+                                conn.executemany(
+                                    "INSERT INTO financials "
+                                    "(ticker, report_date, report_type, indicator, value, unit) "
+                                    "VALUES (?,?,?,?,?,?)", rows)
+                                self._catalog.record_coverage(
+                                    conn, sym, market, data_type="financials",
+                                    fin_report_end=fin_end)
+                            results[sym] = {"status": "ok", "financials": True}
+                        else:
+                            results[sym] = {"status": "failed", "reason": "no_data",
+                                            "error": "无财务数据"}
+                    elif data_type == "adj":
+                        # FR-2.4（Task #21）：复权因子入库。A 股仅——由 stock_zh_a_daily
+                        # 的 qfq_factor / hfq_factor 因子序列回填 adj_factors（PK ticker,trade_date,adj_type）。
+                        # 港股无复权因子口径，直接失败（与财务同策略）。
+                        if is_hk:
+                            results[sym] = {"status": "failed", "reason": "unsupported",
+                                            "error": "复权因子仅支持 A 股"}
+                            continue
+                        ticker = resolve_ticker(code, "a_share")
+                        exch = "sh" if code.startswith(("6", "5", "9")) else "sz"
+                        adj_rows = []
+                        adj_fetched = False
+                        for adj_type, factor_col in (("qfq", "qfq_factor"),
+                                                     ("hfq", "hfq_factor")):
+                            try:
+                                df = _retry_fetch(lambda: ak.stock_zh_a_daily(
+                                    symbol=f"{exch}{code}", start_date=start_compact,
+                                    end_date=end_compact, adjust=f"{adj_type}_factor"),
+                                    limiter=self._limiter)
+                            except Exception:
+                                df = None
+                            if df is None or (hasattr(df, "empty") and df.empty):
+                                continue
+                            adj_fetched = True
+                            for _, r in df.iterrows():
+                                d = r["date"]
+                                ds = (d.strftime("%Y-%m-%d") if hasattr(d, "strftime")
+                                      else str(d)[:10])
+                                if (start and ds < start) or (end and ds > end):
+                                    continue
+                                adj_rows.append([ticker, ds, adj_type,
+                                                 float(r[factor_col])])
+                        if not adj_fetched or not adj_rows:
+                            results[sym] = {"status": "failed",
+                                            "reason": "no_data",
+                                            "error": "该区间无复权因子数据"}
+                            continue
+                        with self._db.transaction() as conn:
+                            conn.executemany(
+                                "INSERT OR REPLACE INTO adj_factors "
+                                "(ticker, trade_date, adj_type, adj_factor) "
+                                "VALUES (?,?,?,?)", adj_rows)
+                            # qfq 作为默认展示口径写入 adj_type；两种因子均入库于 adj_factors
+                            self._catalog.record_coverage(
+                                conn, ticker, "a_share", data_type="adj", adj_type="qfq")
+                        results[sym] = {"status": "ok", "adj": True,
+                                        "count": len(adj_rows)}
+                except Exception as ex:
+                    if isinstance(ex, RateLimitError):
+                        results[sym] = {"status": "failed", "reason": "rate_limited",
+                                        "error": "数据源限流，已自动降速，建议稍后重试或减少标的数"}
+                    elif _is_network_error(ex):
+                        results[sym] = {"status": "failed", "reason": "network",
+                                        "error": "网络异常，请检查连接后重试"}
+                    else:
+                        results[sym] = {"status": "failed", "reason": "no_data",
+                                        "error": str(ex)[:80]}
+        finally:
+            if conservative:
+                self._limiter.reset_rate()
         return results
 
     def get_cache_stats(self) -> dict:

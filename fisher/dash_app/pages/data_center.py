@@ -122,6 +122,16 @@ def _create_query_tab():
                                         className="mt-2 w-100",
                                         disabled=True,
                                     ),
+                                    # FR-5（数据获取稳定性）：保守模式开关——降速避免被数据源限流
+                                    dbc.Checklist(
+                                        options=[
+                                            {"label": "保守模式（降速取数，降低被限流概率）", "value": "on"},
+                                        ],
+                                        value=[],
+                                        id="fetch-conservative-switch",
+                                        className="mt-2 small",
+                                        switch=True,
+                                    ),
                                     # FR-5：按钮不可用时常驻原因提示（DES-4）
                                     html.Div(id="fetch-guard-hint",
                                              className="text-muted small mt-1"),

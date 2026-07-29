@@ -265,13 +265,15 @@ def register_data_callbacks(app):
         State("date-range-picker", "end_date"),
         State("data-type-radio", "value"),
         State("minute-period-selector", "value"),
+        State("fetch-conservative-switch", "value"),
         prevent_initial_call=True,
         running=[
             (Output("fetch-data-button", "disabled"), True, False),
             (Output("fetch-data-button", "children"), "获取中...", "开始获取数据"),
         ],
     )
-    def fetch_data(n_clicks, pool, start_date, end_date, data_type, minute_period):
+    def fetch_data(n_clicks, pool, start_date, end_date, data_type, minute_period,
+                   conservative=False):
         """同步取数回调。
 
         注意：不可用 background=True + yield 生成器——Dash 后台回调不支持
@@ -279,6 +281,11 @@ def register_data_callbacks(app):
         且后台回调在独立进程运行会与主进程的 DuckDB 独占锁冲突。
         单次上限 MAX_FETCH_SYMBOLS(20) 个标的，同步执行可接受。
         取数期间按钮显示「获取中...」，结果一次写入 fetch-results（无进度条）。
+
+        稳定性增强（PRD 数据获取稳定性与容错优化）：
+        - 失败按 reason 结构化分类（限流/无数据/网络/不支持/已缓存），彩色渲染；
+        - 顶部输出分类汇总「成功/失败/跳过/限流」；
+        - conservative 开关透传给服务层，触发限流器降速。
         """
         pool = pool or []
         items = _dedupe_by_value([p for p in pool if p.get("value")])[:MAX_FETCH_SYMBOLS]
@@ -287,8 +294,9 @@ def register_data_callbacks(app):
             return "请先从搜索结果勾选标的", "取数结果将显示在这里"
 
         svc = get_data_service()
-        total = len(items)
-        results, errors, skipped = [], [], []
+        # 分类容器（按 reason 着色）
+        ok_lines, rate_limited_lines, no_data_lines, net_lines, unsupported_lines = [], [], [], [], []
+        skipped = []
 
         for item in items:
             symbol = item["value"]
@@ -299,27 +307,79 @@ def register_data_callbacks(app):
                 continue
             period = minute_period.replace("min", "") if minute_period else ""
             try:
-                result = svc.fetch_bars([symbol], start_date, end_date, data_type, period)
+                result = svc.fetch_bars([symbol], start_date, end_date, data_type,
+                                        period, conservative=bool(conservative))
                 sym_result = result.get(symbol, {})
-                if sym_result.get("status") == "ok":
+                status = sym_result.get("status")
+                if status == "ok":
                     count = sym_result.get("count", 0)
                     if count:
-                        results.append(f"✓ {symbol}: {count}条记录")
+                        ok_lines.append(f"✓ {symbol}: {count}条记录")
                     else:
-                        results.append(f"✓ {symbol}: 财务数据已获取")
+                        ok_lines.append(f"✓ {symbol}: 财务数据已获取")
+                elif status == "skipped":
+                    skipped.append(f"⏭ {symbol}: {sym_result.get('error', '已缓存，跳过')}")
                 else:
-                    errors.append(f"✗ {symbol}: {sym_result.get('error', '无数据')}")
+                    reason = sym_result.get("reason", "no_data")
+                    err = sym_result.get("error", "无数据")
+                    if reason == "rate_limited":
+                        rate_limited_lines.append(f"✗ {symbol}: {err}")
+                    elif reason == "network":
+                        net_lines.append(f"✗ {symbol}: {err}")
+                    elif reason == "unsupported":
+                        unsupported_lines.append(f"⊘ {symbol}: {err}")
+                    else:
+                        no_data_lines.append(f"✗ {symbol}: {err}")
             except Exception as e:
-                errors.append(f"✗ {symbol}: {str(e)[:80]}")
+                msg = str(e)
+                # 兜底：回调层未捕获的异常也尽量分类
+                if "Max retries" in msg or "HTTPSConnectionPool" in msg or "429" in msg:
+                    rate_limited_lines.append(
+                        f"✗ {symbol}: 数据源暂时不可用（东方财富接口限流），请稍后重试")
+                elif "Timeout" in msg or "Connect" in msg:
+                    net_lines.append(f"✗ {symbol}: 请求超时/连接失败，请稍后重试")
+                else:
+                    no_data_lines.append(f"✗ {symbol}: {msg[:120]}")
 
-        summary = f"完成：成功 {len(results)}，失败 {len(errors)}"
-        if skipped:
-            summary += f"，跳过 {len(skipped)}"
-        detail_lines = results + errors + skipped
-        detail_el = html.Div([html.P(line, className="mb-1")
-                              for line in detail_lines[:40]])
+        # 分类汇总（FR-4）：成功/失败/跳过/限流
+        n_ok = len(ok_lines)
+        n_rate = len(rate_limited_lines)
+        n_fail = len(no_data_lines) + len(net_lines) + len(unsupported_lines)
+        n_skip = len(skipped)
+        summary = f"完成：成功 {n_ok}，失败 {n_fail}"
+        if n_rate:
+            summary += f"，限流 {n_rate}"
+        if n_skip:
+            summary += f"，跳过 {n_skip}"
+        if conservative:
+            summary += "（保守模式）"
+
+        # 着色明细：限流=红、网络=橙、无数据=灰、不支持/跳过=蓝、成功=绿
+        def _p(text, color):
+            return html.P(text, className="mb-1", style={"color": color})
+
+        detail_children = []
+        for ln in ok_lines:
+            detail_children.append(_p(ln, "#198754"))
+        for ln in rate_limited_lines:
+            detail_children.append(_p(ln, "#dc3545"))
+        for ln in net_lines:
+            detail_children.append(_p(ln, "#fd7e14"))
+        for ln in no_data_lines:
+            detail_children.append(_p(ln, "#6c757d"))
+        for ln in unsupported_lines:
+            detail_children.append(_p(ln, "#0d6efd"))
+        for ln in skipped:
+            detail_children.append(_p(ln, "#0d6efd"))
+        # 限流时给出可执行建议（DES-1）
+        if n_rate:
+            detail_children.append(_p(
+                "提示：被数据源限流，已自动降速。建议减少标的数（≤10）"
+                "或开启「保守模式」后重试。", "#dc3545"))
+        detail_el = html.Div(detail_children[:60])
+
         # Q3：取数后提供跳转链接
-        if results:
+        if ok_lines:
             first_ticker = items[0]["value"]
             detail_el.children = list(detail_el.children or []) + [
                 html.Hr(className="my-2"),
