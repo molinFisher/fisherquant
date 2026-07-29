@@ -19,10 +19,11 @@ class FactorStorage:
         path = dir_path / "factors.parquet"
         if path.exists():
             existing = pl.read_parquet(path)
-            for col in renamed.columns:
-                if col in existing.columns:
-                    existing = existing.drop(col)
-            merged = existing.hstack(renamed)
+            keep_cols = [c for c in existing.columns if c not in renamed.columns]
+            if keep_cols:
+                merged = existing.select(keep_cols).hstack(renamed)
+            else:
+                merged = renamed
             merged.write_parquet(path)
         else:
             renamed.write_parquet(path)
