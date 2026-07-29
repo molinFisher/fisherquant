@@ -31,15 +31,21 @@ class FillSimulator:
         if order.ticker != bar.ticker:
             return False, 0.0
 
-        raw_price = self._get_raw_price(bar)
+        # G1 MVP：市价单按"次根 bar 开盘价"撮合（信号 bar N → 成交 bar N+1 已是下一根，
+        # 其 open 即真实市价单可成交价），且不接受限价约束。
+        is_market = order.order_type == "market"
+        if is_market:
+            raw_price = bar.open
+        else:
+            raw_price = self._get_raw_price(bar)
 
-        # P2-16：涨跌停封板时对应方向无法成交
+        # P2-16：涨跌停封板时对应方向无法成交（市价单同样适用）
         if self._model_price_limit and self._is_limit_locked(order, bar, prev_close):
             return False, raw_price
 
         fill_price = self._apply_slippage(raw_price, order.side)
 
-        if not self._check_price_limit(order, fill_price):
+        if not is_market and not self._check_price_limit(order, fill_price):
             return False, fill_price
 
         if bar.volume == 0 or order.quantity > bar.volume * self._min_volume_ratio:

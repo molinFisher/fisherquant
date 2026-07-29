@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+from typing import Callable
 import polars as pl
 from ..event.types import Signal, OrderSide, OrderStatus
 from ..oms.orders import create_order
@@ -39,6 +40,8 @@ class BacktestEngine:
         enable_conditions: bool = True,
         settle_t1_daily: bool = True,
         seed: int | None = None,
+        suspension_provider: Callable[[str, str], bool] | None = None,
+        audit_logger: object | None = None,
     ):
         self._bars_df = bars_df
         self._paper = paper_engine
@@ -49,12 +52,15 @@ class BacktestEngine:
         self._enable_conditions = enable_conditions
         self._settle_t1_daily = settle_t1_daily
         self._seed = seed
+        self._suspension_provider = suspension_provider
+        self._audit_logger = audit_logger
         self._nav_history: list[float] = []
         self._gross_nav_history: list[float] = []
         self._trades: list[dict] = []
         self._latest_prices: dict[str, float] = {}
         self._cum_commission: float = 0.0
         self._risk_rejections: list[dict] = []
+        self._skipped_signals: int = 0
 
     async def run(self, strategy) -> dict:
         # P2-14：可复现性 —— 固定随机种子
@@ -90,12 +96,18 @@ class BacktestEngine:
             signals = strategy.on_signal()
 
             if signals:
-                self._process_signals(signals, account["available"])
+                self._process_signals(signals, account["available"], bar_date)
 
             filled = self._paper.on_bar(bar)
             for order in filled:
                 self._positions.update_on_fill(order, order.filled_price)
                 self._cum_commission += order.commission
+                if self._audit_logger is not None:
+                    self._audit_logger.log(
+                        "order_filled", ticker=order.ticker, side=order.side.value,
+                        quantity=order.quantity, price=order.filled_price,
+                        commission=order.commission,
+                    )
                 self._trades.append({
                     "ticker": order.ticker,
                     "side": order.side.value,
@@ -132,9 +144,21 @@ class BacktestEngine:
             "gross_nav_history": self._gross_nav_history,
             "trades": self._trades,
             "risk_rejections": self._risk_rejections,
+            "skipped_signals": self._skipped_signals,
         }
 
-    def _process_signals(self, signals: list[Signal], capital: float) -> None:
+    def _process_signals(self, signals: list[Signal], capital: float, trade_date: str) -> None:
+        # G2：停牌校验 —— 标的状态为停牌时抑制该标的信号并计数
+        if self._suspension_provider is not None:
+            kept: list[Signal] = []
+            for s in signals:
+                if self._suspension_provider(s.ticker, trade_date):
+                    self._skipped_signals += 1
+                else:
+                    kept.append(s)
+            signals = kept
+        if not signals:
+            return
         orders = self._portfolio_builder.build_orders(signals, capital)
         for o in orders:
             # P0-4：T+1 —— 卖出前校验可用持仓（已排除当日买入冻结）
@@ -155,6 +179,11 @@ class BacktestEngine:
                         "ticker": o.ticker, "side": o.side.value,
                         "reasons": reasons,
                     })
+                    if self._audit_logger is not None:
+                        self._audit_logger.log(
+                            "risk_rejected", ticker=o.ticker, side=o.side.value,
+                            reasons=";".join(reasons),
+                        )
                     logger.info("Risk rejected %s %s: %s", o.side.value, o.ticker, reasons)
                     continue
 
@@ -167,4 +196,9 @@ class BacktestEngine:
                 price=o.price,
                 order_type=o.order_type,
             )
+            if self._audit_logger is not None:
+                self._audit_logger.log(
+                    "order_submitted", ticker=o.ticker, side=o.side.value,
+                    quantity=o.quantity, price=o.price, order_type=o.order_type,
+                )
             self._paper.submit_order(order)

@@ -1,3 +1,4 @@
+import random
 from threading import RLock
 from ..broker.adapter import BrokerAdapter
 from ..event.types import Bar, OrderSide, OrderStatus
@@ -30,6 +31,9 @@ class PaperEngine(BrokerAdapter):
         slippage_bps: float = 0.0,
         allow_short: bool = False,
         thread_safe: bool = True,
+        cancel_failure_rate: float = 0.0,
+        cancel_delay_bars: int = 0,
+        rng_seed: int | None = None,
     ):
         self._capital = initial_capital
         self._available = initial_capital
@@ -38,6 +42,12 @@ class PaperEngine(BrokerAdapter):
         self._rules = rules
         self._oms = OMSEngine()
         self._allow_short = allow_short
+        # G1 MVP：撤单仿真（默认均关闭，向后兼容）
+        self._cancel_failure_rate = cancel_failure_rate
+        self._cancel_delay_bars = cancel_delay_bars
+        self._rng = random.Random(rng_seed) if rng_seed is not None else random
+        self._cancel_pending: dict[str, int] = {}
+        self._cancel_failures: int = 0
 
         if isinstance(fee_config, FeesConfig):
             self._fee_calc = FeeCalculator.from_config(fee_config)
@@ -84,6 +94,14 @@ class PaperEngine(BrokerAdapter):
         order = self._orders.get(order_id)
         if order is None or order.is_terminal:
             return False
+        # G1 MVP：撤单失败率（默认 0 → 总是成功，向后兼容）
+        if self._cancel_failure_rate > 0 and self._rng.random() < self._cancel_failure_rate:
+            self._cancel_failures += 1
+            return False
+        # G1 MVP：撤单延迟（默认 0 → 立即生效；>0 → N 根 bar 后才真正撤单）
+        if self._cancel_delay_bars > 0:
+            self._cancel_pending[order_id] = self._cancel_delay_bars
+            return True  # 撤单已被接受，延迟生效
         self._oms.cancel(order_id)
         return True
 
@@ -111,6 +129,14 @@ class PaperEngine(BrokerAdapter):
     def on_bar(self, bar: Bar) -> list[Order]:
         with self._locked():
             self._bar_index += 1
+            # G1 MVP：处理延迟撤单（倒计时归零才真正撤单；撤单生效前订单仍可成交）
+            for oid in list(self._cancel_pending.keys()):
+                self._cancel_pending[oid] -= 1
+                if self._cancel_pending[oid] <= 0:
+                    self._cancel_pending.pop(oid)
+                    o = self._orders.get(oid)
+                    if o is not None and not o.is_terminal:
+                        self._oms.cancel(oid)
             # 仅撮合上一根及之前提交的订单；本根新提交的留到下一根
             eligible = self._deferred
             self._deferred = []

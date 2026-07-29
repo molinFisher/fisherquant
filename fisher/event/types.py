@@ -70,6 +70,7 @@ class Signal(Event):
     side: OrderSide = OrderSide.BUY
     quantity: int = 0
     limit_price: float = 0.0
+    order_type: str = "limit"
     confidence: float = 1.0
     reason: str = ""
 

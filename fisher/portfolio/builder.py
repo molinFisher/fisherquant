@@ -58,6 +58,7 @@ class PortfolioBuilder:
                     "quantity": max(net_qty, 0),
                     "confidence": avg_confidence,
                     "price": avg_price,
+                    "order_type": dominant.order_type,
                 }
             elif self.conflict_mode == "first_wins":
                 s = sigs[0]
@@ -68,6 +69,7 @@ class PortfolioBuilder:
                     "quantity": s.quantity,
                     "confidence": s.confidence,
                     "price": s.limit_price,
+                    "order_type": s.order_type,
                 }
             else:
                 s = sigs[0]
@@ -78,6 +80,7 @@ class PortfolioBuilder:
                     "quantity": s.quantity,
                     "confidence": s.confidence,
                     "price": s.limit_price,
+                    "order_type": s.order_type,
                 }
         return merged
 
@@ -122,7 +125,7 @@ class PortfolioBuilder:
                     side=info.get("side", OrderSide.BUY),
                     quantity=quantity,
                     price=price,
-                    order_type="limit",
+                    order_type=info.get("order_type", "limit"),
                     status=OrderStatus.PENDING,
                 )
             )

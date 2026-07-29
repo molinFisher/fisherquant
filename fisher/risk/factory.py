@@ -8,6 +8,11 @@ from .pre_trade import (
     PriceLimitRule,
     BlacklistRule,
     SectorLimitRule,
+    MaxOrderQtyRule,
+    MaxNotionalRule,
+    MaxPositionPerSymbolRule,
+    MaxLeverageRule,
+    MaxOpenOrdersRule,
 )
 
 logger = logging.getLogger(__name__)
@@ -18,6 +23,11 @@ _RULE_CLASSES = {
     "PriceLimit": PriceLimitRule,
     "Blacklist": BlacklistRule,
     "SectorLimit": SectorLimitRule,
+    "MaxOrderQty": MaxOrderQtyRule,
+    "MaxNotional": MaxNotionalRule,
+    "MaxPositionPerSymbol": MaxPositionPerSymbolRule,
+    "MaxLeverage": MaxLeverageRule,
+    "MaxOpenOrders": MaxOpenOrdersRule,
 }
 
 
