@@ -1,6 +1,28 @@
 import dash_bootstrap_components as dbc
 from dash import html, dcc, dash_table
 
+from fisher.factor.registry import FactorRegistry
+from fisher.factor import register_all_factors
+
+
+def _registered_names() -> set:
+    """返回已注册（可实现）因子名集合；调用前确保注册（幂等）。"""
+    register_all_factors()
+    return {f.name for f in FactorRegistry.list_all()}
+
+
+def _factor_options() -> list:
+    """计算下拉选项：未实现因子 disabled。"""
+    registered = _registered_names()
+    return [
+        {
+            "label": f"{f['name']} - {f['description']}",
+            "value": f["name"],
+            "disabled": f["name"] not in registered,
+        }
+        for f in FACTOR_DEFINITIONS
+    ]
+
 
 def create_factor_center_layout():
     return dbc.Container(
@@ -44,18 +66,32 @@ FACTOR_DEFINITIONS = [
 
 
 def _create_factor_list_tab():
+    registered = _registered_names()
     columns = [
         {"name": "因子名称", "id": "name"},
         {"name": "类别", "id": "category"},
         {"name": "描述", "id": "description"},
+        {"name": "状态", "id": "status"},
     ]
     data = []
     for f in FACTOR_DEFINITIONS:
+        is_impl = f["name"] in registered
         data.append({
             "name": f["name"],
             "category": f["category"],
             "description": f["description"],
+            "status": "可用" if is_impl else "未实现",
         })
+
+    style_data_conditional = [
+        {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
+    ]
+    # 未实现因子行灰显
+    for i, f in enumerate(FACTOR_DEFINITIONS):
+        if f["name"] not in registered:
+            style_data_conditional.append(
+                {"if": {"row_index": i}, "color": "#adb5bd", "fontStyle": "italic"}
+            )
 
     return dbc.Container(
         [
@@ -68,9 +104,7 @@ def _create_factor_list_tab():
                 style_table={"overflowX": "auto"},
                 style_cell={"padding": "8px", "fontSize": "13px"},
                 style_header={"backgroundColor": "#f8f9fa", "fontWeight": "bold"},
-                style_data_conditional=[
-                    {"if": {"row_index": "odd"}, "backgroundColor": "#fafbfc"},
-                ],
+                style_data_conditional=style_data_conditional,
             ),
         ]
     )
@@ -109,10 +143,7 @@ def _create_factor_compute_tab():
                                     [
                                         dcc.Dropdown(
                                             id="factor-compute-factors",
-                                            options=[
-                                                {"label": f"{f['name']} - {f['description']}", "value": f["name"]}
-                                                for f in FACTOR_DEFINITIONS
-                                            ],
+                                            options=_factor_options(),
                                             multi=True,
                                             placeholder="选择要计算的因子...",
                                         ),
@@ -125,6 +156,35 @@ def _create_factor_compute_tab():
                         width=6,
                     ),
                 ]
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader("数据频率"),
+                                dbc.CardBody(
+                                    dcc.Dropdown(
+                                        id="factor-compute-frequency",
+                                        options=[
+                                            {"label": "日线", "value": "daily"},
+                                            {"label": "1 分钟", "value": "1"},
+                                            {"label": "5 分钟", "value": "5"},
+                                            {"label": "15 分钟", "value": "15"},
+                                            {"label": "30 分钟", "value": "30"},
+                                            {"label": "60 分钟", "value": "60"},
+                                        ],
+                                        value="daily",
+                                        clearable=False,
+                                    )
+                                ),
+                            ],
+                            className="mb-3",
+                        ),
+                        width=6,
+                    ),
+                ],
+                className="mb-2",
             ),
             dbc.Button(
                 "开始计算",

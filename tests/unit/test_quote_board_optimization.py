@@ -324,24 +324,35 @@ def test_set_export_today_sets_today():
 # --------------------------------------------------------------------------- #
 # 「当日」快捷按钮（行情看板日线自定义时间段）
 # --------------------------------------------------------------------------- #
-def test_set_quote_daily_today_sets_today_and_custom():
-    """行情看板日线「当日」按钮：start/end 设为今天，并把时间范围切到自定义。"""
+def test_set_daily_today_start_sets_start_today_and_custom(monkeypatch):
+    """日历弹窗内「当日」聚焦开始日期时：仅 start 设为今天，end 不变，并切到 custom。"""
+    from types import SimpleNamespace
     from fisher.dash_app.callbacks import quote_callbacks as qc
     from datetime import date
     with capture_dash_callbacks() as app:
         qc.register_quote_callbacks(app)
-        cb = _find_cb(app, "set_quote_daily_today")
-        start, end, mode = cb(1)
+        cb = _find_cb(app, "set_daily_today")
+        monkeypatch.setattr(qc, "ctx", SimpleNamespace(triggered_id="qb-daily-today-start-btn"))
+        start, end, mode = cb(1, None, "2024-01-01", "2024-01-10")
     today = date.today().isoformat()
-    assert start == today and end == today
+    assert start == today
+    assert end is no_update
     assert mode == "custom"
 
 
-def test_set_quote_daily_today_no_op_on_initial_call():
-    """行情看板日线「当日」按钮：n_clicks 为 None 时不更新。"""
+def test_set_daily_today_end_sets_end_today_and_custom(monkeypatch):
+    """日历弹窗内「当日」聚焦结束日期时：仅 end 设为今天，start 不变，并切到 custom。"""
+    from types import SimpleNamespace
     from fisher.dash_app.callbacks import quote_callbacks as qc
-    from dash import no_update
+    from datetime import date
     with capture_dash_callbacks() as app:
         qc.register_quote_callbacks(app)
-        cb = _find_cb(app, "set_quote_daily_today")
-        assert cb(None) == (no_update, no_update, no_update)
+        cb = _find_cb(app, "set_daily_today")
+        monkeypatch.setattr(qc, "ctx", SimpleNamespace(triggered_id="qb-daily-today-end-btn"))
+        start, end, mode = cb(None, 1, "2024-01-01", "2024-01-10")
+    today = date.today().isoformat()
+    assert start is no_update
+    assert end == today
+    assert mode == "custom"
+
+

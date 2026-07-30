@@ -765,20 +765,28 @@ def register_quote_callbacks(app):
         return _build_daily_chart(chart_symbol, bars, adj_mode or "none")
 
     # ------------------------------------------------------------------ #
-    # FR-3（行情看板体验优化）：「当日」快捷按钮
+    # FR-3（行情看板体验优化）：日历弹窗内「当日」快捷按钮
+    # 由 assets/today_button.js 在弹窗 controls 行注入「当日」，
+    # 并根据当前聚焦的是开始/结束输入，分别触发以下两个隐藏按钮。
     # ------------------------------------------------------------------ #
     @app.callback(
         Output("qb-daily-date-range", "start_date"),
         Output("qb-daily-date-range", "end_date"),
         Output("qb-daily-range", "value"),
-        Input("qb-daily-today-btn", "n_clicks"),
+        Input("qb-daily-today-start-btn", "n_clicks"),
+        Input("qb-daily-today-end-btn", "n_clicks"),
+        State("qb-daily-date-range", "start_date"),
+        State("qb-daily-date-range", "end_date"),
         prevent_initial_call=True,
     )
-    def set_quote_daily_today(n_clicks):
-        if not n_clicks:
-            return no_update, no_update, no_update
+    def set_daily_today(start_clicks, end_clicks, start_date, end_date):
         today = datetime.date.today().isoformat()
-        return today, today, "custom"
+        triggered = ctx.triggered_id
+        if triggered == "qb-daily-today-start-btn":
+            return today, no_update, "custom"
+        if triggered == "qb-daily-today-end-btn":
+            return no_update, today, "custom"
+        return no_update, no_update, no_update
 
 
 def _build_daily_chart(symbol, bars, adj_mode="none"):

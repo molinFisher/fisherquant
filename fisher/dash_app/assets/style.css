@@ -238,7 +238,9 @@
  * 由 assets/today_button.js 动态插入 .fq-today-btn；
  * 页面上原独立按钮隐藏，仅作 Dash 回调触发器。 */
 #dc-range-today-btn,
-#export-today-btn {
+#export-today-btn,
+#qb-daily-today-start-btn,
+#qb-daily-today-end-btn {
     display: none;
 }
 

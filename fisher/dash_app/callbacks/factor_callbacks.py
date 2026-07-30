@@ -50,6 +50,7 @@ def register_factor_callbacks(app):
         Input("factor-compute-btn", "n_clicks"),
         State("factor-compute-symbols", "value"),
         State("factor-compute-factors", "value"),
+        State("factor-compute-frequency", "value"),
         prevent_initial_call=True,
         background=True,
         running=[
@@ -57,7 +58,7 @@ def register_factor_callbacks(app):
             (Output("factor-compute-btn", "children"), "计算中...", "开始计算"),
         ],
     )
-    def compute_factors(n_clicks, symbols, factors):
+    def compute_factors(n_clicks, symbols, factors, freq):
         if not symbols:
             return 0, "0%", html.Div("请先选择标的", className="text-warning")
         if not factors:
@@ -71,16 +72,19 @@ def register_factor_callbacks(app):
 
         for symbol in symbols:
             try:
-                ohlcv_df = db.query_df(
-                    "SELECT trade_date, open, high, low, close, volume FROM bars_daily WHERE ticker=? ORDER BY trade_date",
-                    [symbol],
-                )
+                ohlcv_df = _load_ohlcv(db, symbol, freq or "daily")
                 if ohlcv_df.is_empty():
                     errors.append(f"✗ {symbol}: 无数据")
                     continue
             except Exception as e:
                 errors.append(f"✗ {symbol}: {str(e)[:60]}")
                 continue
+
+            # 前复权因子是否可用（用于 ATR 缺复权降级告警）
+            adj_missing = (
+                "adj_factor" in ohlcv_df.columns
+                and ohlcv_df["adj_factor"].null_count() == ohlcv_df.height
+            )
 
             for fname in factors:
                 try:
@@ -90,6 +94,8 @@ def register_factor_callbacks(app):
                     factor_df = computed.select(["trade_date"] + new_cols)
                     FactorStorage.save(symbol, factor_df)
                     results.append(f"✓ {symbol}/{fname}: {len(new_cols)} 列")
+                    if fname == "atr" and adj_missing:
+                        results.append(f"  ⚠ {symbol}/atr: 未找到前复权因子，已用不复权价计算")
                 except Exception as e:
                     errors.append(f"✗ {symbol}/{fname}: {str(e)[:60]}")
                 completed += 1
@@ -159,6 +165,34 @@ def register_factor_callbacks(app):
             ],
         )
         return table, html.Div(stats_lines)
+
+
+def _load_ohlcv(db, symbol: str, freq: str) -> "pl.DataFrame":
+    """按频率加载 OHLCV + 前复权因子（LEFT JOIN adj_factors qfq）。
+
+    - 日线：bars_daily 直接 JOIN。
+    - 分钟线：bars_minute，按 bar_time 取日期 JOIN；bar_time 别名 trade_date 以复用统一下游逻辑。
+    """
+    if freq == "daily":
+        sql = (
+            "SELECT d.trade_date, d.open, d.high, d.low, d.close, d.volume, "
+            "       a.adj_factor "
+            "FROM bars_daily d "
+            "LEFT JOIN adj_factors a "
+            "  ON a.ticker = d.ticker AND a.trade_date = d.trade_date AND a.adj_type = 'qfq' "
+            "WHERE d.ticker = ? ORDER BY d.trade_date"
+        )
+        return db.query_df(sql, [symbol])
+
+    sql = (
+        "SELECT m.bar_time AS trade_date, m.open, m.high, m.low, m.close, m.volume, "
+        "       a.adj_factor "
+        "FROM bars_minute m "
+        "LEFT JOIN adj_factors a "
+        "  ON a.ticker = m.ticker AND a.trade_date = CAST(m.bar_time AS DATE) AND a.adj_type = 'qfq' "
+        "WHERE m.ticker = ? AND m.period = ? ORDER BY m.bar_time"
+    )
+    return db.query_df(sql, [symbol, freq])
 
 
 def _get_db():

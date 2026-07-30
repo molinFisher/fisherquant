@@ -114,10 +114,18 @@ def create_quote_board_layout():
                                 start_date=None,
                                 end_date=None,
                                 className="small",
+                                start_date_id="qb-daily-start-input",
+                                end_date_id="qb-daily-end-input",
+                            ),
+                            # 弹窗内「当日」由 assets/today_button.js 注入到日历 controls 行；
+                            # 以下两个隐藏按钮仅作回调触发器。
+                            dbc.Button(
+                                "当日(起)", id="qb-daily-today-start-btn", color="light", size="sm",
+                                title="将开始日期设为今天", className="d-none",
                             ),
                             dbc.Button(
-                                "当日", id="qb-daily-today-btn", color="light", size="sm",
-                                className="ms-2", title="将日线区间设为今天并切换到自定义",
+                                "当日(止)", id="qb-daily-today-end-btn", color="light", size="sm",
+                                title="将结束日期设为今天", className="d-none",
                             ),
                         ],
                         className="d-flex align-items-center mb-2",

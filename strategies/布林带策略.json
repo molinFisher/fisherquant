@@ -1,0 +1,13 @@
+{
+  "name": "布林带策略",
+  "type": "bollinger",
+  "description": "布林带策略 - 价格跌破下轨买入，突破上轨卖出",
+  "params": {
+    "period": 20,
+    "std": 2
+  },
+  "symbols": [],
+  "enabled": true,
+  "created_at": "2026-07-30 08:40:50",
+  "updated_at": "2026-07-30 08:40:50"
+}

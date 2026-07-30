@@ -18,6 +18,12 @@ app = dash.Dash(
 )
 app.title = "FisherQuant"
 app._favicon = "favicon.svg"
+
+# 因子注册装配：在布局构建之前注册全部已实现因子（幂等），
+# 保证因子中心 UI 在构建时即可读取注册状态（可用/未实现）。
+from fisher.factor import register_all_factors
+register_all_factors()
+
 app.layout = create_layout()
 register_all_callbacks(app)
 
