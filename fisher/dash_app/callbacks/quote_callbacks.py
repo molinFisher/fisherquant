@@ -764,20 +764,6 @@ def register_quote_callbacks(app):
         return _build_daily_chart(chart_symbol, bars, adj_mode or "none")
 
 
-    # 「当日」快捷按钮：将日线区间设为今天，并切换到「自定义」档以触发区间渲染
-    @app.callback(
-        Output("qb-daily-date-range", "start_date"),
-        Output("qb-daily-date-range", "end_date"),
-        Output("qb-daily-range", "value"),
-        Input("qb-daily-today-btn", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def set_daily_today(n_clicks):
-        import datetime
-        today = datetime.date.today().isoformat()
-        return today, today, "custom"
-
-
 def _build_daily_chart(symbol, bars, adj_mode="none"):
     """构建日 K 线图：Candlestick + 成交量柱（阳红阴绿）+ MA5/MA10/MA20。
 

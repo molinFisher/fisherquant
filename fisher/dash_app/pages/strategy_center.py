@@ -53,13 +53,6 @@ def create_strategy_center_layout():
                 className="mb-3 align-items-center",
             ),
             html.Div(id="strategy-table-container"),
-            _create_wizard_modal(),
-            dcc.Store(id="strategy-wizard-state", data={"step": 0}),
-            dcc.Store(id="strategy-list-store"),
-            dcc.Store(id="strategy-edit-id"),
-            dcc.Store(id="strategy-refresh-trigger", data=""),
-            dcc.Store(id="confirm-delete-strategy-name", data=""),
-            dcc.Store(id="symbol-pool-options-store"),
         ]
     )
 
@@ -75,6 +68,25 @@ _STRATEGY_TYPES = [
 
 
 def _create_wizard_modal():
+    """策略向导弹窗。提升到顶层布局（layout.create_layout 调用），确保始终存在于初始 DOM。
+
+    之前该弹窗与依赖的 dcc.Store 随策略中心页面经 router 回调动态注入，
+    在 Dash 4 下 dcc.Store 不会渲染到 DOM，导致向导回调写入失败 —— 弹窗打不开、
+    「取消」按钮无效。
+
+    关键修复点：向导导航回调 handle_wizard_navigation 以 wizard-name / wizard-type /
+    wizard-description / wizard-symbols 作为 State，并以 wizard-prev-btn /
+    wizard-next-btn / wizard-save-btn / wizard-cancel-btn 作为 Input。这些组件原本
+    随步骤「条件渲染」—— 例如 step 0 没有「上一步/保存」按钮、step 2/3 没有 name/type/
+    description 输入框。当在某步点击「取消」时，回调因缺少（当前步未渲染的）Input/State
+    组件而整条失败，所有 Output（含 is_open=False）被丢弃，表现为取消无效。
+
+    因此这里把以下组件设为弹窗「常驻」（始终在 DOM 中，仅按步骤显示/隐藏）：
+      - wizard-name / wizard-type / wizard-description（步骤 0 显示）
+      - wizard-symbols（步骤 2 显示）
+      - 四个页脚按钮（始终渲染，不适用的禁用）
+    对应显隐与回填由 strategy_wizard_callbacks.sync_wizard_fields 回调统一控制。
+    """
     return dbc.Modal(
         [
             dbc.ModalHeader(
@@ -83,6 +95,51 @@ def _create_wizard_modal():
                 ]
             ),
             dbc.ModalBody(id="strategy-wizard-body"),
+            # 常驻基本信息字段：始终在 DOM，仅 step 0 显示（见 sync_wizard_fields）。
+            html.Div(
+                id="wizard-basic-fields",
+                style={"display": "none"},
+                children=[
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label("策略名称"),
+                                    dbc.Input(
+                                        id="wizard-name",
+                                        type="text",
+                                        placeholder="输入策略名称...",
+                                    ),
+                                    html.Div(id="wizard-name-error", className="text-danger small mt-1"),
+                                ],
+                                width=6,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("策略类型"),
+                                    dcc.Dropdown(
+                                        id="wizard-type",
+                                        options=_STRATEGY_TYPES,
+                                        clearable=False,
+                                        placeholder="选择策略类型...",
+                                    ),
+                                    html.Div(id="wizard-type-error", className="text-danger small mt-1"),
+                                ],
+                                width=6,
+                            ),
+                        ]
+                    ),
+                    dbc.Label("描述", className="mt-2"),
+                    dbc.Textarea(id="wizard-description", placeholder="策略描述...", rows=3),
+                ],
+            ),
+            # 常驻标的池下拉框：始终在 DOM，仅 step 2 显示（见 sync_wizard_fields）。
+            dcc.Dropdown(
+                id="wizard-symbols",
+                multi=True,
+                placeholder="选择标的（可选）...",
+                style={"display": "none"},
+            ),
             dbc.ModalFooter(id="strategy-wizard-footer"),
         ],
         id="strategy-wizard-modal",
@@ -92,55 +149,13 @@ def _create_wizard_modal():
 
 
 def _render_wizard_step_0(prev_data=None):
-    data = prev_data or {}
+    # 基本信息字段（wizard-name/type/description）已提升为弹窗常驻组件（见
+    # _create_wizard_modal 的 wizard-basic-fields），仅在本步由 sync_wizard_fields
+    # 回调显示并回填。此处不再重复渲染，避免重复 id 且该组件缺失导致向导回调整体失败。
     return dbc.Container(
         [
             html.H5("步骤 1/4: 基本信息", className="mb-3"),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        [
-                            dbc.Label("策略名称"),
-                            dbc.Input(
-                                id="wizard-name",
-                                type="text",
-                                placeholder="输入策略名称...",
-                                value=data.get("name", ""),
-                            ),
-                            html.Div(id="wizard-name-error", className="text-danger small mt-1"),
-                        ],
-                        width=6,
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label("策略类型"),
-                            dcc.Dropdown(
-                                id="wizard-type",
-                                options=_STRATEGY_TYPES,
-                                value=data.get("type"),
-                                placeholder="选择策略类型...",
-                                clearable=False,
-                            ),
-                            html.Div(id="wizard-type-error", className="text-danger small mt-1"),
-                        ],
-                        width=6,
-                    ),
-                ],
-                className="mb-3",
-            ),
-            dbc.Row(
-                dbc.Col(
-                    [
-                        dbc.Label("描述"),
-                        dbc.Textarea(
-                            id="wizard-description",
-                            placeholder="策略描述...",
-                            value=data.get("description", ""),
-                            rows=3,
-                        ),
-                    ]
-                )
-            ),
+            html.P("请填写策略名称与类型（描述可选）。", className="text-muted"),
         ]
     )
 
@@ -330,17 +345,13 @@ def _render_wizard_step_1(strategy_type, prev_data=None):
 
 def _render_wizard_step_2(prev_data=None):
     data = prev_data or {}
+    # 注意：标的选择下拉框 wizard-symbols 已提升为弹窗常驻组件（见 layout._create_wizard_modal），
+    # 仅在本步由 sync_symbols_ui 回调显示。此处不再重复渲染，避免重复 id 且该组件
+    # 缺失导致向导回调整体失败。
     return dbc.Container(
         [
             html.H5("步骤 3/4: 标的池", className="mb-3"),
             html.P("选择需要应用策略的标的（留空则适用所有标的）", className="text-muted"),
-            dcc.Dropdown(
-                id="wizard-symbols",
-                options=[],
-                value=data.get("symbols", []),
-                multi=True,
-                placeholder="选择标的（可选）...",
-            ),
         ]
     )
 

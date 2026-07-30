@@ -115,10 +115,6 @@ def create_quote_board_layout():
                                 end_date=None,
                                 className="small",
                             ),
-                            dbc.Button(
-                                "当日", id="qb-daily-today-btn", color="light", size="sm",
-                                className="ms-2", title="将日线区间设为今天",
-                            ),
                         ],
                         className="d-flex align-items-center mb-2",
                     ),

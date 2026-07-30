@@ -1,6 +1,8 @@
 import dash_bootstrap_components as dbc
 from dash import html, dcc
 
+from fisher.dash_app.pages.strategy_center import _create_wizard_modal
+
 NAV_ITEMS = [
     {
         "group": "数据管理",
@@ -158,6 +160,17 @@ def create_layout():
             dcc.Store(id="sidebar-state", data={"open": True}),
             dcc.Interval(id="refresh-interval", interval=60000),
             html.Div(id="toast-container", className="toast-container"),
+            # 策略中心向导弹窗与状态存储：提升到顶层布局，始终存在于初始 DOM。
+            # 若随策略中心页面经 router 回调动态注入，dcc.Store 在 Dash 4 下不会
+            # 渲染到 DOM，导致向导回调（打开/取消/保存）写入失败、弹窗与
+            # 「取消」按钮失效。详见 _create_wizard_modal 注释。
+            _create_wizard_modal(),
+            dcc.Store(id="strategy-wizard-state", data={"step": 0}),
+            dcc.Store(id="strategy-list-store"),
+            dcc.Store(id="strategy-edit-id"),
+            dcc.Store(id="strategy-refresh-trigger", data=""),
+            dcc.Store(id="confirm-delete-strategy-name", data=""),
+            dcc.Store(id="symbol-pool-options-store"),
         ],
         fluid=True,
         className="app-container",

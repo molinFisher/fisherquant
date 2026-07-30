@@ -20,6 +20,7 @@ strategy_wizard 六个回调模块。
 """
 import base64
 import datetime as _dtmod
+import json
 
 import polars as pl
 import pytest
@@ -112,11 +113,39 @@ class FakeDuckDB:
 
 
 class CtxStub:
-    """模拟 dash.ctx / dash.callback_context：仅暴露 triggered 与 states。"""
+    """模拟 dash.ctx / dash.callback_context。
+
+    暴露 triggered / states，并从 triggered 自动派生 triggered_id 与
+    inputs_list（回调新实现改用结构化 id 匹配，规避 Dash 对非 ASCII
+    模式匹配 id 的转义差异 bug——见 strategy_crud_callbacks._resolve_pattern_value）。
+    """
 
     def __init__(self, triggered=None, states=None):
         self.triggered = triggered or []
         self.states = states or {}
+        self.triggered_id = None
+        self.inputs_list = []
+        if self.triggered:
+            prop_id = self.triggered[0].get("prop_id", "")
+            raw_id = prop_id.split(".")[0]
+            if raw_id.startswith("{"):
+                try:
+                    self.triggered_id = json.loads(raw_id)
+                except Exception:
+                    self.triggered_id = raw_id
+            elif raw_id:
+                self.triggered_id = raw_id
+            # 派生 inputs_list：模式匹配 id 放入子列表分组，普通 id 平铺
+            for t in self.triggered:
+                pid = t.get("prop_id", "").split(".")[0]
+                if pid.startswith("{"):
+                    try:
+                        tid = json.loads(pid)
+                    except Exception:
+                        continue
+                    self.inputs_list.append([{"id": tid, "value": t.get("value")}])
+                elif pid:
+                    self.inputs_list.append({"id": pid, "value": t.get("value")})
 
 
 # --------------------------------------------------------------------------- #
@@ -163,11 +192,15 @@ def _patch_now(monkeypatch, dt_tuple):
 
 
 def _patch_dash_ctx(monkeypatch, triggered=None, states=None):
-    monkeypatch.setattr("dash.ctx", CtxStub(triggered=triggered, states=states))
+    stub = CtxStub(triggered=triggered, states=states)
+    monkeypatch.setattr("dash.ctx", stub)
+    monkeypatch.setattr("dash.callback_context", stub)
 
 
 def _patch_callback_context(monkeypatch, triggered):
-    monkeypatch.setattr("dash.callback_context", CtxStub(triggered=triggered))
+    stub = CtxStub(triggered=triggered)
+    monkeypatch.setattr("dash.callback_context", stub)
+    monkeypatch.setattr("dash.ctx", stub)
 
 
 # =========================================================================== #
@@ -1285,7 +1318,9 @@ class TestStrategyCrudCallbacks:
         with capture_dash_callbacks() as app:
             strategy_crud_callbacks.register_strategy_crud_callbacks(app)
             cb = _nth(app, 1)
-        table, lst = cb("trigger", "/strategy-center")
+        # 该回调已改为仅由 strategy-refresh-trigger 触发（单参数），
+        # 避免与 url 路由回调双重渲染表格。
+        table, lst = cb("trigger")
         assert lst == strategies
 
     def test_handle_delete(self, monkeypatch):
@@ -1410,13 +1445,18 @@ class TestStrategyWizardCallbacks:
         assert callable(_nth(app, 0))
 
     def test_build_wizard_footer_steps(self):
+        # 修复「取消无效」后：四个按钮始终渲染（handle_wizard_navigation 的
+        # Input 组件必须常驻 DOM，否则整条回调静默失败），不适用的用 disabled。
         f0 = strategy_wizard_callbacks._build_wizard_footer(0)
-        ids0 = [getattr(b, "id", None) for b in f0]
-        assert "wizard-cancel-btn" in ids0 and "wizard-next-btn" in ids0
-        assert "wizard-prev-btn" not in ids0
+        by_id0 = {getattr(b, "id", None): b for b in f0}
+        assert "wizard-cancel-btn" in by_id0 and "wizard-next-btn" in by_id0
+        assert "wizard-prev-btn" in by_id0
+        assert by_id0["wizard-prev-btn"].disabled is True
+        assert by_id0["wizard-save-btn"].disabled is True
         f3 = strategy_wizard_callbacks._build_wizard_footer(3)
-        ids3 = [getattr(b, "id", None) for b in f3]
-        assert "wizard-save-btn" in ids3
+        by_id3 = {getattr(b, "id", None): b for b in f3}
+        assert by_id3["wizard-save-btn"].disabled is False
+        assert by_id3["wizard-next-btn"].disabled is True
 
     def test_get_wizard_title(self):
         assert strategy_wizard_callbacks._get_wizard_title(None) == "新建策略"
@@ -1447,7 +1487,8 @@ class TestStrategyWizardCallbacks:
                             lambda: FakeService())
         monkeypatch.setattr("fisher.dash_app.services.get_data_service",
                             lambda: FakeService())
-        _patch_dash_ctx(monkeypatch, triggered=[{"prop_id": "strategy-create-btn.n_clicks"}])
+        _patch_dash_ctx(monkeypatch, triggered=[
+            {"prop_id": "strategy-create-btn.n_clicks", "value": 1}])
         with capture_dash_callbacks() as app:
             strategy_wizard_callbacks.register_strategy_wizard_callbacks(app)
             cb = _nth(app, 0)
@@ -1482,6 +1523,23 @@ class TestStrategyWizardCallbacks:
             strategy_wizard_callbacks.register_strategy_wizard_callbacks(app)
             cb = _nth(app, 0)
         res = cb(1, [])
+        assert all(r is no_update for r in res)
+
+    def test_open_wizard_ignores_initial_render_of_edit_buttons(
+            self, monkeypatch, _stub_wizard_steps):
+        """进入策略中心时，列表首渲染的模式匹配「编辑」按钮会触发回调，
+        但 n_clicks 为 None，必须忽略——不得默认弹出「编辑策略」。"""
+        fake = FakeService(strategies={"s1": {"name": "s1", "type": "sma_cross",
+                                             "params": {}, "symbols": []}})
+        monkeypatch.setattr(strategy_wizard_callbacks, "get_strategy_service",
+                            lambda: fake)
+        _patch_dash_ctx(monkeypatch, triggered=[
+            {"prop_id": '{"type":"strategy-edit-btn","index":"s1"}.n_clicks',
+             "value": None}])
+        with capture_dash_callbacks() as app:
+            strategy_wizard_callbacks.register_strategy_wizard_callbacks(app)
+            cb = _nth(app, 0)
+        res = cb(None, [None])
         assert all(r is no_update for r in res)
 
     def test_navigation_cancel(self, monkeypatch, _stub_wizard_steps):
@@ -1586,7 +1644,9 @@ class TestStrategyWizardCallbacks:
         _patch_dash_ctx(monkeypatch, triggered=[])
         with capture_dash_callbacks() as app:
             strategy_wizard_callbacks.register_strategy_wizard_callbacks(app)
-            cb = _nth(app, 4)
+            # 按函数名取回调，避免注册顺序变化（新增 sync_wizard_fields）导致索引漂移
+            cb = next(f for f in app.all_callbacks()
+                      if f.__name__ == "update_params_form_on_type_change")
         assert cb(None, {"step": 1, "data": {}}) is no_update
         res = cb("sma_cross", {"step": 1, "data": {}})
         assert "STEP" in "".join(_text(res))

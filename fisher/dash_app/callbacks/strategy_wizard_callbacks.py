@@ -61,28 +61,49 @@ def register_strategy_wizard_callbacks(app):
         prevent_initial_call=True,
     )
     def open_wizard_for_create(create_clicks, edit_clicks_list):
-        triggered = dash.ctx.triggered[0] if dash.ctx.triggered else None
-        if not triggered:
+        # 注意：不要用 dash.ctx.triggered[0]["value"] 判断真实点击！
+        # 当模式匹配 id 含非 ASCII 字符（如中文策略名）时，Dash 的 changedPropIds
+        # 使用原始 UTF-8 JSON（{"index":"MACD策略",...}），而 inputs 字典的 key 是
+        # ASCII 转义形式（{"index":"MACD\u7b56\u7565",...}），字符串匹配失败导致
+        # triggered 的 value 恒为 None，真实点击也会被误判为初始渲染触发。
+        # 正确做法：用 ctx.triggered_id（已 JSON 解析为 dict）定位触发组件，
+        # 再从 ctx.args_grouping / 回调入参中按结构化 id 取真实 n_clicks。
+        trig_id = dash.ctx.triggered_id
+        if trig_id is None:
             return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
-        prop_id = triggered["prop_id"]
-        if "strategy-create-btn" in prop_id:
+        if trig_id == "strategy-create-btn":
+            # 守卫：初始渲染触发时 n_clicks 为 None/0
+            if not create_clicks:
+                return no_update, no_update, no_update, no_update, no_update, no_update, no_update
             new_state = {"step": 0, "data": {}}
             body = _render_wizard_step_0()
             footer = _build_wizard_footer(0)
             return True, body, footer, "新建策略", new_state, None, ""
 
-        if "strategy-edit-btn" in prop_id:
+        if isinstance(trig_id, dict) and trig_id.get("type") == "strategy-edit-btn":
+            name = trig_id.get("index", "")
+            # 守卫：模式匹配的「编辑」按钮在策略列表渲染/重渲染时会以 n_clicks=None
+            # 触发本回调（prevent_initial_call 挡不住动态新增组件），必须忽略，
+            # 否则进入策略中心会默认弹出「编辑策略」。通过 inputs_list 按结构化 id
+            # 匹配对应按钮的真实 n_clicks（避免字符串转义差异）。
+            n_clicks = None
             try:
-                triggered_id = json.loads(prop_id.split(".")[0])
-                name = triggered_id.get("index", "")
+                for grp in dash.ctx.inputs_list:
+                    if isinstance(grp, list):
+                        for item in grp:
+                            if item.get("id") == trig_id:
+                                n_clicks = item.get("value")
+                                break
             except Exception as e:
-                logger.error("Failed to parse edit button: %s", e)
+                logger.error("Failed to resolve edit button n_clicks: %s", e)
+            if not n_clicks:
                 return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
             svc = get_strategy_service()
             data = svc.get_strategy(name)
             if data is None:
+                logger.warning("Edit strategy not found: %s", name)
                 return no_update, no_update, no_update, no_update, no_update, no_update, no_update
             step = 0
             wizard_state = {"step": step, "data": data}
@@ -287,6 +308,36 @@ def register_strategy_wizard_callbacks(app):
         return []
 
     @app.callback(
+        Output("wizard-basic-fields", "style"),
+        Output("wizard-name", "value"),
+        Output("wizard-type", "value"),
+        Output("wizard-description", "value"),
+        Output("wizard-symbols", "style"),
+        Output("wizard-symbols", "value"),
+        Input("strategy-wizard-state", "data"),
+    )
+    def sync_wizard_fields(state):
+        # 控制弹窗常驻字段的显隐与回填：
+        #  - 基本信息字段（wizard-name/type/description）仅在 step 0 显示，并按向导数据回填；
+        #  - 标的池下拉框（wizard-symbols）仅在 step 2 显示，并回填已选标的。
+        # 这样 handle_wizard_navigation 在任意步骤点击「取消/上一步/保存」时，
+        # 所有 Input/State 组件都存在于 DOM，回调整体能正常执行。
+        data = (state or {}).get("data", {}) or {}
+        step = (state or {}).get("step", 0)
+        basic_style = {"display": "block"} if step == 0 else {"display": "none"}
+        symbols_style = (
+            {"display": "block", "marginTop": "12px"} if step == 2 else {"display": "none"}
+        )
+        return (
+            basic_style,
+            data.get("name", ""),
+            data.get("type", None),
+            data.get("description", ""),
+            symbols_style,
+            data.get("symbols", []),
+        )
+
+    @app.callback(
         Output("strategy-wizard-body", "children", allow_duplicate=True),
         Input("wizard-type", "value"),
         State("strategy-wizard-state", "data"),
@@ -337,14 +388,30 @@ def _render_wizard_body(step, data):
 
 
 def _build_wizard_footer(step):
+    # 始终渲染全部四个按钮，不适用的以 disabled 呈现。
+    # 原因：handle_wizard_navigation 以这四个按钮作为 Input，若某步不渲染其中
+    # 某个（如 step 0 没有「上一步/保存」），点击「取消」时该 Input 组件缺失，
+    # 回调整体失败、取消无效。常驻后回调在任意步骤都能正常触发。
     buttons = []
-    if step > 0:
-        buttons.append(dbc.Button("上一步", id="wizard-prev-btn", color="secondary", className="me-2"))
+    buttons.append(
+        dbc.Button(
+            "上一步", id="wizard-prev-btn", color="secondary", className="me-2",
+            disabled=(step <= 0),
+        )
+    )
     buttons.append(dbc.Button("取消", id="wizard-cancel-btn", color="link", className="me-2"))
-    if step < 3:
-        buttons.append(dbc.Button("下一步", id="wizard-next-btn", color="primary"))
-    else:
-        buttons.append(dbc.Button("保存策略", id="wizard-save-btn", color="success"))
+    buttons.append(
+        dbc.Button(
+            "下一步", id="wizard-next-btn", color="primary",
+            disabled=(step >= 3),
+        )
+    )
+    buttons.append(
+        dbc.Button(
+            "保存策略", id="wizard-save-btn", color="success",
+            disabled=(step < 3),
+        )
+    )
     return buttons
 
 

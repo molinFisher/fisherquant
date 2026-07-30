@@ -50,6 +50,25 @@ def _readiness_badge(status, missing):
     return dbc.Badge("⚠ 部分缺", color="warning", className="small", title=txt)
 
 
+def _resolve_pattern_value(trig_id):
+    """按结构化 id 从 ctx.inputs_list 中取模式匹配组件的真实触发值。
+
+    背景：模式匹配 id 含非 ASCII 字符（如中文策略名）时，Dash 的
+    changedPropIds 使用原始 UTF-8 JSON，而 ctx.triggered / ctx.inputs 的
+    key 是 ASCII 转义形式，字符串匹配失败导致 triggered value 恒为 None。
+    用 dict 比较可绕开转义差异。
+    """
+    try:
+        for grp in dash.ctx.inputs_list:
+            if isinstance(grp, list):
+                for item in grp:
+                    if item.get("id") == trig_id:
+                        return item.get("value")
+    except Exception as e:
+        logger.error("resolve pattern value failed: %s", e)
+    return None
+
+
 def register_strategy_crud_callbacks(app):
     @app.callback(
         Output("strategy-table-container", "children"),
@@ -66,10 +85,13 @@ def register_strategy_crud_callbacks(app):
         Output("strategy-table-container", "children", allow_duplicate=True),
         Output("strategy-list-store", "data", allow_duplicate=True),
         Input("strategy-refresh-trigger", "data"),
-        Input("url", "pathname"),
         prevent_initial_call=True,
     )
-    def refresh_strategy_table_after_action(refresh_data, pathname):
+    def refresh_strategy_table_after_action(refresh_data):
+        # 仅由增删改等动作触发刷新；页面路由变化已由 refresh_strategy_table 处理，
+        # 若此处再监听 url 会造成每次进入页面双重渲染表格（DOM 反复重建）。
+        if not refresh_data:
+            return no_update, no_update
         svc = get_strategy_service()
         strategies = svc.list_strategies()
         table = _build_strategy_list(strategies, _compute_readiness_map(strategies))
@@ -81,20 +103,23 @@ def register_strategy_crud_callbacks(app):
         prevent_initial_call=True,
     )
     def handle_delete(clicks_list):
-        ctx = dash.callback_context
-        triggered = ctx.triggered
-        if not triggered or not any(v for v in (clicks_list or []) if v):
+        # 注意：不要用 ctx.triggered[i]["value"] 判断真实点击——模式匹配 id 含
+        # 中文时 Dash 的 changedPropIds（原始 UTF-8）与 inputs key（ASCII 转义）
+        # 字符串不匹配，value 恒为 None。改用 triggered_id + inputs_list 结构化匹配。
+        trig_id = dash.ctx.triggered_id
+        if not isinstance(trig_id, dict) or not any(v for v in (clicks_list or []) if v):
             return no_update
-        svc = get_strategy_service()
-        for i, t in enumerate(triggered):
-            if t.get("value"):
-                try:
-                    tid = json.loads(t["prop_id"].split(".")[0])
-                    name = tid.get("index", "")
-                    if name:
-                        svc.delete_strategy(name)
-                except Exception as e:
-                    logger.error("Delete strategy failed: %s", e)
+        n_clicks = _resolve_pattern_value(trig_id)
+        if not n_clicks:
+            return no_update
+        name = trig_id.get("index", "")
+        if not name:
+            return no_update
+        try:
+            get_strategy_service().delete_strategy(name)
+        except Exception as e:
+            logger.error("Delete strategy failed: %s", e)
+            return no_update
         return datetime.now().isoformat()
 
     @app.callback(
@@ -103,31 +128,39 @@ def register_strategy_crud_callbacks(app):
         prevent_initial_call=True,
     )
     def handle_toggle(values):
-        ctx = dash.callback_context
-        triggered = ctx.triggered
-        if not triggered:
+        # 重要：模式匹配的开关组件在表格每次重渲染时都会以初始 value 触发本回调
+        # （prevent_initial_call 挡不住动态新建组件）。若此处无条件写
+        # strategy-refresh-trigger，会形成「表格重渲染 → 开关触发 → 写 trigger →
+        # 表格重渲染」的无限循环，导致表格 DOM 反复销毁重建，编辑/删除等按钮的
+        # n_clicks 被不断重置，真实点击也会被守卫误判为初始触发而失效。
+        # 因此：只有开关值与磁盘中的 enabled 状态真正不同时，才落盘并触发刷新。
+        trig_id = dash.ctx.triggered_id
+        if not isinstance(trig_id, dict):
+            return no_update
+        name = trig_id.get("index", "")
+        # 中文 id 下 ctx.triggered 的 value 不可靠（转义差异），用结构化匹配取值
+        new_val = _resolve_pattern_value(trig_id)
+        if not name or new_val is None:
             return no_update
         svc = get_strategy_service()
-        for t_item in triggered:
-            try:
-                tid = json.loads(t_item["prop_id"].split(".")[0])
-                name = tid.get("index", "")
-                new_val = t_item.get("value")
-                if name and new_val is not None:
-                    data = svc.get_strategy(name)
-                    if data:
-                        data["enabled"] = bool(new_val)
-                        cfg = StrategyConfig(
-                            name=data["name"],
-                            type=data["type"],
-                            description=data.get("description", ""),
-                            params=data.get("params", {}),
-                            symbols=data.get("symbols", []),
-                            enabled=bool(new_val),
-                        )
-                        svc.save_strategy(cfg)
-            except Exception as e:
-                logger.error("Toggle strategy failed: %s", e)
+        changed = False
+        try:
+            data = svc.get_strategy(name)
+            if data and bool(data.get("enabled", True)) != bool(new_val):
+                cfg = StrategyConfig(
+                    name=data["name"],
+                    type=data["type"],
+                    description=data.get("description", ""),
+                    params=data.get("params", {}),
+                    symbols=data.get("symbols", []),
+                    enabled=bool(new_val),
+                )
+                svc.save_strategy(cfg)
+                changed = True
+        except Exception as e:
+            logger.error("Toggle strategy failed: %s", e)
+        if not changed:
+            return no_update
         return datetime.now().isoformat()
 
     @app.callback(
@@ -136,21 +169,19 @@ def register_strategy_crud_callbacks(app):
         prevent_initial_call=True,
     )
     def handle_export(clicks_list):
-        ctx = dash.callback_context
-        triggered = ctx.triggered
-        if not triggered or not any(v for v in (clicks_list or []) if v):
+        trig_id = dash.ctx.triggered_id
+        if not isinstance(trig_id, dict) or not any(v for v in (clicks_list or []) if v):
             return no_update
-        svc = get_strategy_service()
-        for t_item in triggered:
-            if t_item.get("value"):
-                try:
-                    tid = json.loads(t_item["prop_id"].split(".")[0])
-                    name = tid.get("index", "")
-                    content = svc.export_json(name)
-                    if content:
-                        return dcc.send_string(content, filename=f"{name}.json")
-                except Exception as e:
-                    logger.error("Export strategy failed: %s", e)
+        # 中文 id 下 ctx.triggered 的 value 不可靠（转义差异），用结构化匹配取值
+        if not _resolve_pattern_value(trig_id):
+            return no_update
+        name = trig_id.get("index", "")
+        try:
+            content = get_strategy_service().export_json(name)
+            if content:
+                return dcc.send_string(content, filename=f"{name}.json")
+        except Exception as e:
+            logger.error("Export strategy failed: %s", e)
         return no_update
 
     @app.callback(
