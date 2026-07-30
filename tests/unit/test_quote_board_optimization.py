@@ -319,3 +319,29 @@ def test_set_export_today_sets_today():
         start, end = cb(1)
     today = date.today().isoformat()
     assert start == today and end == today
+
+
+# --------------------------------------------------------------------------- #
+# 「当日」快捷按钮（行情看板日线自定义时间段）
+# --------------------------------------------------------------------------- #
+def test_set_quote_daily_today_sets_today_and_custom():
+    """行情看板日线「当日」按钮：start/end 设为今天，并把时间范围切到自定义。"""
+    from fisher.dash_app.callbacks import quote_callbacks as qc
+    from datetime import date
+    with capture_dash_callbacks() as app:
+        qc.register_quote_callbacks(app)
+        cb = _find_cb(app, "set_quote_daily_today")
+        start, end, mode = cb(1)
+    today = date.today().isoformat()
+    assert start == today and end == today
+    assert mode == "custom"
+
+
+def test_set_quote_daily_today_no_op_on_initial_call():
+    """行情看板日线「当日」按钮：n_clicks 为 None 时不更新。"""
+    from fisher.dash_app.callbacks import quote_callbacks as qc
+    from dash import no_update
+    with capture_dash_callbacks() as app:
+        qc.register_quote_callbacks(app)
+        cb = _find_cb(app, "set_quote_daily_today")
+        assert cb(None) == (no_update, no_update, no_update)

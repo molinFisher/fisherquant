@@ -21,3 +21,5 @@ data/dash_cache/
 # runtime db artifacts (force-added by mistake, never commit)
 *.corrupt*
 data/
+# backup trash for mistakenly-created strategy clones (runtime cleanup)
+strategies/_backup_trash/

@@ -13,6 +13,7 @@
         { root: "date-range-picker", btn: "dc-range-today-btn" },
         { root: "export-start-date", btn: "export-today-btn" },
         { root: "export-end-date", btn: "export-today-btn" },
+        { root: "qb-daily-date-range", btn: "qb-daily-today-btn" },
     ];
 
     function findControls(rootEl) {

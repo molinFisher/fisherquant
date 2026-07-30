@@ -1,3 +1,4 @@
+import datetime
 import logging
 
 import dash
@@ -762,6 +763,22 @@ def register_quote_callbacks(app):
                 logger.warning("render_daily_chart failed %s: %s", chart_symbol, e)
                 bars = []
         return _build_daily_chart(chart_symbol, bars, adj_mode or "none")
+
+    # ------------------------------------------------------------------ #
+    # FR-3（行情看板体验优化）：「当日」快捷按钮
+    # ------------------------------------------------------------------ #
+    @app.callback(
+        Output("qb-daily-date-range", "start_date"),
+        Output("qb-daily-date-range", "end_date"),
+        Output("qb-daily-range", "value"),
+        Input("qb-daily-today-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def set_quote_daily_today(n_clicks):
+        if not n_clicks:
+            return no_update, no_update, no_update
+        today = datetime.date.today().isoformat()
+        return today, today, "custom"
 
 
 def _build_daily_chart(symbol, bars, adj_mode="none"):
