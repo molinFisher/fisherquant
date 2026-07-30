@@ -32,6 +32,8 @@ dev = [
     "pytest-cov",
     "mypy",
     "ruff",
+    "playwright",
+    "pytest-playwright",
 ]
 report = [
     "weasyprint>=60",

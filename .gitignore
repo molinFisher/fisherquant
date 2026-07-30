@@ -23,3 +23,6 @@ data/dash_cache/
 data/
 # backup trash for mistakenly-created strategy clones (runtime cleanup)
 strategies/_backup_trash/
+
+# UI 测试运行日志
+tests/.ui-run.log
